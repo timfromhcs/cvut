@@ -1,0 +1,39 @@
+#version 450
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_ARB_gpu_shader_int64 : require
+
+layout(buffer_reference, scalar) buffer PixelBuffer {
+    uint pixels[];
+};
+
+layout(push_constant) uniform PushConstants {
+    PixelBuffer fb;      // Offset 0..7
+    uint64_t width;      // Offset 8..15
+    uint64_t height;     // Offset 16..23
+    uint64_t max_iters;  // Offset 24..31
+} pc;
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+void main() {
+    uint gx = gl_GlobalInvocationID.x;
+    uint gy = gl_GlobalInvocationID.y;
+
+    uint w = uint(pc.width);
+    uint h = uint(pc.height);
+
+    if (gx >= w || gy >= h) {
+        return;
+    }
+
+    // Exact procedural RGBA8 color gradient & bitwise pattern
+    uint r = (gx * 255) / (w - 1);
+    uint g = (gy * 255) / (h - 1);
+    uint b = ((gx ^ gy) * 255) / (w - 1);
+    uint a = 255;
+
+    uint color = r | (g << 8) | (b << 16) | (a << 24);
+    uint idx = gy * w + gx;
+    pc.fb.pixels[idx] = color;
+}

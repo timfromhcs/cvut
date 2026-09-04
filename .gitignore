@@ -1,0 +1,41 @@
+# Build artifacts & Binaries
+build/
+dist/
+target/
+bin/
+*.spv
+*.cubin.tmp
+*.obj
+*.o
+*.lib
+*.exp
+*.dll
+*.so
+*.dylib
+*.exe
+*.tar.gz
+*.zip
+*.bak
+
+# Rust target
+src/lifter/target/
+Cargo.lock
+
+# IDE & Editor
+.vscode/
+.idea/
+.vs/
+*.swp
+*.swo
+
+# Temporary, logs & OS
+tmp/
+/tmp/
+*.log
+debug_*
+Thumbs.db
+.DS_Store
+
+# Git junctions/submodules
+deps/
+workspace/

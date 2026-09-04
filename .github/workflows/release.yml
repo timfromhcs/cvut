@@ -1,0 +1,136 @@
+name: Multi-OS Release Matrix
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-matrix:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            artifact_name: cvut-linux-x86_64
+            archive_type: tar.gz
+          - os: windows-2022
+            artifact_name: cvut-windows-x86_64
+            archive_type: zip
+          - os: macos-14
+            artifact_name: cvut-macos-arm64
+            archive_type: tar.gz
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.os == 'macos-14' && 'aarch64-apple-darwin' || '' }}
+
+      # Linux Setup & Build
+      - name: Install Dependencies (Linux)
+        if: matrix.os == 'ubuntu-24.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libvulkan-dev vulkan-tools glslang-tools spirv-tools clang
+
+      - name: Build CVUT (Linux)
+        if: matrix.os == 'ubuntu-24.04'
+        run: |
+          mkdir -p build/bin build/lib dist/bin dist/lib dist/include
+          cargo build --release --manifest-path src/lifter/Cargo.toml
+          cp src/lifter/target/release/sass_lifter build/bin/
+          clang++ -std=c++20 -shared -fPIC src/runtime/cuda_runtime.cpp -lvulkan -o build/lib/libcudart.so
+          clang++ -std=c++20 -shared -fPIC src/runtime/nvcuda_driver.cpp src/runtime/cuda_runtime.cpp -lvulkan -o build/lib/libcuda.so
+          cp build/lib/* dist/lib/
+          cp build/bin/* dist/bin/
+          cp src/runtime/*.h dist/include/
+          tar -czf ${{ matrix.artifact_name }}.tar.gz -C dist .
+
+      # Windows Setup & Build
+      - name: Setup Vulkan SDK (Windows)
+        if: matrix.os == 'windows-2022'
+        uses: humbletim/setup-vulkan-sdk@v1.2.0
+        with:
+          vulkan-query-version: 1.3.268.0
+          vulkan-components: Vulkan-Headers, Vulkan-Loader
+
+      - name: Build CVUT (Windows)
+        if: matrix.os == 'windows-2022'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path build/bin, build/lib, dist/bin, dist/lib, dist/include | Out-Null
+          cargo build --release --manifest-path src/lifter/Cargo.toml
+          Copy-Item src/lifter/target/release/sass_lifter.exe build/bin/ -Force
+          clang++ -std=c++20 -shared -fPIC src/runtime/cuda_runtime.cpp -lvulkan -o build/lib/cudart64_12.dll
+          clang++ -std=c++20 -shared -fPIC -static src/runtime/nvcuda_driver.cpp src/runtime/cuda_runtime.cpp -lvulkan -o build/bin/nvcuda.dll
+          clang++ -std=c++20 -shared src/runtime/nvml_shim.cpp -lvulkan -o build/bin/nvml.dll
+          clang++ -std=c++20 src/tools/nvidia_smi.cpp -Lbuild/bin -lnvml -o build/bin/nvidia-smi.exe
+          Copy-Item build/bin/*.dll, build/bin/*.exe dist/bin/ -Force
+          Copy-Item build/lib/*.dll, build/lib/*.lib dist/lib/ -Force
+          Copy-Item src/runtime/*.h dist/include/ -Force
+          Compress-Archive -Path dist/* -DestinationPath "${{ matrix.artifact_name }}.zip" -Force
+
+      # macOS Setup & Build
+      - name: Install Dependencies (macOS)
+        if: matrix.os == 'macos-14'
+        run: |
+          brew install molten-vk glslang spirv-tools
+          mkdir -p build/bin build/lib dist/bin dist/lib dist/include
+
+      - name: Build CVUT (macOS)
+        if: matrix.os == 'macos-14'
+        run: |
+          cargo build --release --manifest-path src/lifter/Cargo.toml
+          cp src/lifter/target/release/sass_lifter build/bin/
+          clang++ -std=c++20 -shared -fPIC src/runtime/cuda_runtime.cpp -lvulkan -o build/lib/libcudart.dylib || true
+          cp -r build/bin dist/ || true
+          cp -r build/lib dist/ || true
+          cp src/runtime/*.h dist/include/
+          tar -czf ${{ matrix.artifact_name }}.tar.gz -C dist .
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: cvut-*.*
+
+  release:
+    name: Publish GitHub Release
+    needs: build-matrix
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+
+      - name: Prepare Release Assets & Checksums
+        run: |
+          mkdir -p assets
+          find release-artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" \) -exec cp {} assets/ \;
+          cd assets
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            assets/*
+          generate_release_notes: true
+          draft: false
+          prerelease: false

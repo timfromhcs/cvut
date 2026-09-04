@@ -1,0 +1,35 @@
+#version 450
+#extension GL_EXT_buffer_reference : require
+
+layout(buffer_reference, std430) buffer FloatBuffer {
+    float data[];
+};
+
+layout(push_constant) uniform PushConstants {
+    FloatBuffer input_data;
+    FloatBuffer output_data;
+    uint n;
+} push;
+
+shared float sdata[256];
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+void main() {
+    uint tid = gl_LocalInvocationID.x;
+    uint gid = gl_GlobalInvocationID.x;
+
+    sdata[tid] = (gid < push.n) ? push.input_data.data[gid] : 0.0;
+    barrier();
+
+    for (uint s = 128; s > 0; s >>= 1) {
+        if (tid < s) {
+            sdata[tid] += sdata[tid + s];
+        }
+        barrier();
+    }
+
+    if (tid == 0) {
+        push.output_data.data[gl_WorkGroupID.x] = sdata[0];
+    }
+}

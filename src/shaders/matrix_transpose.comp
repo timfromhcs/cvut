@@ -1,0 +1,43 @@
+#version 450
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_buffer_reference2 : require
+
+layout(buffer_reference, std430) buffer FloatBuffer {
+    float data[];
+};
+
+layout(push_constant) uniform PushConstants {
+    FloatBuffer in_buf;
+    FloatBuffer out_buf;
+    uint dim;
+} push;
+
+const uint TILE_DIM = 32;
+const uint BLOCK_ROWS = 8;
+
+shared float tile[32][33]; // Padded to prevent shared memory bank conflicts
+
+layout(local_size_x = 32, local_size_y = 8, local_size_z = 1) in;
+
+void main() {
+    uint x = gl_WorkGroupID.x * TILE_DIM + gl_LocalInvocationID.x;
+    uint y = gl_WorkGroupID.y * TILE_DIM + gl_LocalInvocationID.y;
+    uint dim = push.dim;
+
+    for (uint j = 0; j < TILE_DIM; j += BLOCK_ROWS) {
+        if ((x < dim) && ((y + j) < dim)) {
+            tile[gl_LocalInvocationID.y + j][gl_LocalInvocationID.x] = push.in_buf.data[(y + j) * dim + x];
+        }
+    }
+
+    barrier();
+
+    x = gl_WorkGroupID.y * TILE_DIM + gl_LocalInvocationID.x;
+    y = gl_WorkGroupID.x * TILE_DIM + gl_LocalInvocationID.y;
+
+    for (uint j = 0; j < TILE_DIM; j += BLOCK_ROWS) {
+        if ((x < dim) && ((y + j) < dim)) {
+            push.out_buf.data[(y + j) * dim + x] = tile[gl_LocalInvocationID.x][gl_LocalInvocationID.y + j];
+        }
+    }
+}

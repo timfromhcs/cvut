@@ -1,0 +1,31 @@
+#version 450
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+
+layout(buffer_reference, std430) buffer HalfBuffer {
+    float16_t data[];
+};
+
+layout(push_constant) uniform PushConstants {
+    HalfBuffer a;
+    HalfBuffer b;
+    HalfBuffer c;
+    uint m;
+    uint n;
+    uint k;
+} push;
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+void main() {
+    uint row = gl_GlobalInvocationID.y;
+    uint col = gl_GlobalInvocationID.x;
+
+    if (row < push.m && col < push.n) {
+        float16_t acc = float16_t(0.0);
+        for (uint p = 0; p < push.k; ++p) {
+            acc += push.a.data[row * push.k + p] * push.b.data[p * push.n + col];
+        }
+        push.c.data[row * push.n + col] = acc;
+    }
+}

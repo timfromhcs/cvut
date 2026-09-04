@@ -1,0 +1,10 @@
+[package]
+name = "sass_lifter"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "sass_lifter"
+path = "src/main.rs"
+
+[dependencies]
