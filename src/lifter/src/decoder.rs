@@ -163,3 +163,77 @@ pub fn decode_instruction(inst: &[u32; 4]) -> DecodedInstruction {
         raw: *inst,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_bits_single_word() {
+        let inst = [0b1011_0100, 0, 0, 0];
+        assert_eq!(get_bits(&inst, 0, 4), 0b0100);
+        assert_eq!(get_bits(&inst, 4, 8), 0b1011);
+    }
+
+    #[test]
+    fn test_get_bits_cross_word_boundary() {
+        let inst = [0x80000000, 0x00000001, 0, 0];
+        // Bit 31 of word 0 is 1, bit 0 of word 1 is 1 -> 0b11 = 3
+        assert_eq!(get_bits(&inst, 31, 33), 3);
+    }
+
+    #[test]
+    fn test_decode_s2r() {
+        // Opcode 0x919, dst=2, sr_idx=0x21 (TidX)
+        let mut inst = [0u32; 4];
+        inst[0] = 0x919 | (2 << 16);
+        inst[2] = 0x21 << 8; // bits 72..80 = word 2 bits 8..16
+        let decoded = decode_instruction(&inst);
+        assert_eq!(decoded.opcode, Opcode::S2R);
+        assert_eq!(decoded.dst, 2);
+        assert_eq!(decoded.special_reg, SpecialReg::TidX);
+    }
+
+    #[test]
+    fn test_decode_alu_iadd3_and_imad() {
+        let mut inst = [0u32; 4];
+        inst[0] = 0x010; // IADD3
+        let decoded = decode_instruction(&inst);
+        assert_eq!(decoded.opcode, Opcode::IADD3);
+
+        inst[0] = 0x024; // IMAD
+        let decoded2 = decode_instruction(&inst);
+        assert_eq!(decoded2.opcode, Opcode::IMAD);
+    }
+
+    #[test]
+    fn test_decode_memory_and_sync() {
+        let mut inst = [0u32; 4];
+        inst[0] = 0x981; // LDG
+        assert_eq!(decode_instruction(&inst).opcode, Opcode::LDG);
+
+        inst[0] = 0x986; // STG
+        assert_eq!(decode_instruction(&inst).opcode, Opcode::STG);
+
+        inst[0] = 0x988; // STS
+        assert_eq!(decode_instruction(&inst).opcode, Opcode::STS);
+
+        inst[0] = 0x984; // LDS
+        assert_eq!(decode_instruction(&inst).opcode, Opcode::LDS);
+
+        inst[0] = 0xb1d; // BarSync
+        assert_eq!(decode_instruction(&inst).opcode, Opcode::BarSync);
+
+        inst[0] = 0x94d; // EXIT
+        assert_eq!(decode_instruction(&inst).opcode, Opcode::EXIT);
+    }
+
+    #[test]
+    fn test_special_reg_from() {
+        assert_eq!(SpecialReg::from(0x00), SpecialReg::LaneId);
+        assert_eq!(SpecialReg::from(0x21), SpecialReg::TidX);
+        assert_eq!(SpecialReg::from(0x25), SpecialReg::CtaIdX);
+        assert_eq!(SpecialReg::from(0x50), SpecialReg::ClockLo);
+        assert_eq!(SpecialReg::from(0xff), SpecialReg::Unknown);
+    }
+}

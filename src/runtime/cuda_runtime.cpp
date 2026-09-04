@@ -138,10 +138,14 @@ public:
         timelineFeatures.pNext = &bdaFeatures;
         timelineFeatures.timelineSemaphore = VK_TRUE;
 
+        VkPhysicalDeviceVulkan11Features v11Features = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES };
+        v11Features.storageBuffer16BitAccess = VK_TRUE;
+
         VkPhysicalDeviceVulkan12Features v12Features = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES };
-        v12Features.pNext = &timelineFeatures;
+        v12Features.pNext = &v11Features;
         v12Features.bufferDeviceAddress = VK_TRUE;
         v12Features.timelineSemaphore = VK_TRUE;
+        v12Features.shaderFloat16 = VK_TRUE;
 
         VkPhysicalDeviceFeatures deviceFeatures = {};
         deviceFeatures.shaderInt64 = VK_TRUE;
@@ -153,12 +157,31 @@ public:
         devCreateInfo.queueCreateInfoCount = 1;
         devCreateInfo.pQueueCreateInfos = &queueInfo;
 
-        const char* enabledExts[] = {
-            VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME,
-            VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME
+        uint32_t extCount = 0;
+        vkEnumerateDeviceExtensionProperties(m_physicalDevice, nullptr, &extCount, nullptr);
+        std::vector<VkExtensionProperties> availableExts(extCount);
+        vkEnumerateDeviceExtensionProperties(m_physicalDevice, nullptr, &extCount, availableExts.data());
+
+        auto hasExtension = [&](const char* name) {
+            for (const auto& ext : availableExts) {
+                if (std::strcmp(ext.extensionName, name) == 0) return true;
+            }
+            return false;
         };
-        devCreateInfo.enabledExtensionCount = 2;
-        devCreateInfo.ppEnabledExtensionNames = enabledExts;
+
+        std::vector<const char*> enabledExts;
+        if (hasExtension(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME)) {
+            enabledExts.push_back(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
+        }
+        if (hasExtension(VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME)) {
+            enabledExts.push_back(VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME);
+        }
+        if (hasExtension("VK_KHR_portability_subset")) {
+            enabledExts.push_back("VK_KHR_portability_subset");
+        }
+
+        devCreateInfo.enabledExtensionCount = static_cast<uint32_t>(enabledExts.size());
+        devCreateInfo.ppEnabledExtensionNames = enabledExts.empty() ? nullptr : enabledExts.data();
 
         res = vkCreateDevice(m_physicalDevice, &devCreateInfo, nullptr, &m_device);
         if (res != VK_SUCCESS) {
@@ -586,6 +609,16 @@ public:
         return cudaSuccess;
     }
 
+    size_t getTotalDeviceLocalMemory() const {
+        size_t total = 0;
+        for (uint32_t i = 0; i < m_memProperties.memoryHeapCount; ++i) {
+            if (m_memProperties.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) {
+                total += m_memProperties.memoryHeaps[i].size;
+            }
+        }
+        return total;
+    }
+
     cudaError_t launchSpirv(const char* spvPath, dim3 gridDim, dim3 blockDim, const void* pushConstants, size_t pushConstantsSize, cudaStream_t stream) {
         cudaError_t err = initialize();
         if (err != cudaSuccess) return err;
@@ -606,13 +639,14 @@ public:
         VkResult res = vkCreateShaderModule(m_device, &smci, nullptr, &shaderModule);
         if (res != VK_SUCCESS) return cudaErrorInvalidDeviceFunction;
 
+        uint32_t alignedPcSize = static_cast<uint32_t>((pushConstantsSize + 3) & ~size_t(3));
         VkPushConstantRange pcRange = {};
         pcRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         pcRange.offset = 0;
-        pcRange.size = static_cast<uint32_t>(pushConstantsSize);
+        pcRange.size = alignedPcSize;
 
         VkPipelineLayoutCreateInfo plci = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
-        if (pushConstantsSize > 0) {
+        if (alignedPcSize > 0) {
             plci.pushConstantRangeCount = 1;
             plci.pPushConstantRanges = &pcRange;
         }
@@ -656,8 +690,14 @@ public:
         vkBeginCommandBuffer(cb, &begInfo);
 
         vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-        if (pushConstants && pushConstantsSize > 0) {
-            vkCmdPushConstants(cb, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, static_cast<uint32_t>(pushConstantsSize), pushConstants);
+        if (pushConstants && alignedPcSize > 0) {
+            if (alignedPcSize == pushConstantsSize) {
+                vkCmdPushConstants(cb, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, alignedPcSize, pushConstants);
+            } else {
+                std::vector<uint8_t> padded(alignedPcSize, 0);
+                std::memcpy(padded.data(), pushConstants, pushConstantsSize);
+                vkCmdPushConstants(cb, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, alignedPcSize, padded.data());
+            }
         }
         vkCmdDispatch(cb, gridDim.x, gridDim.y, gridDim.z);
 
@@ -693,6 +733,65 @@ public:
         vkDestroyShaderModule(m_device, shaderModule, nullptr);
 
         return cudaSuccess;
+    }
+
+    void cleanup() {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (!m_initialized) return;
+
+        if (m_device != VK_NULL_HANDLE) {
+            vkDeviceWaitIdle(m_device);
+
+            for (auto& pair : m_allocations) {
+                if (pair.second.is_dedicated) {
+                    if (pair.second.dedicated_memory != VK_NULL_HANDLE) {
+                        vkFreeMemory(m_device, pair.second.dedicated_memory, nullptr);
+                    }
+                    if (pair.second.buffer != VK_NULL_HANDLE) {
+                        vkDestroyBuffer(m_device, pair.second.buffer, nullptr);
+                    }
+                }
+            }
+            m_allocations.clear();
+
+            for (auto& slab : m_slabs) {
+                if (slab.memory != VK_NULL_HANDLE) vkFreeMemory(m_device, slab.memory, nullptr);
+                if (slab.buffer != VK_NULL_HANDLE) vkDestroyBuffer(m_device, slab.buffer, nullptr);
+            }
+            m_slabs.clear();
+
+            if (m_staging.mappedPtr) {
+                vkUnmapMemory(m_device, m_staging.memory);
+                m_staging.mappedPtr = nullptr;
+            }
+            if (m_staging.buffer != VK_NULL_HANDLE) {
+                vkDestroyBuffer(m_device, m_staging.buffer, nullptr);
+                m_staging.buffer = VK_NULL_HANDLE;
+            }
+            if (m_staging.memory != VK_NULL_HANDLE) {
+                vkFreeMemory(m_device, m_staging.memory, nullptr);
+                m_staging.memory = VK_NULL_HANDLE;
+            }
+
+            if (m_defaultStream.timelineSemaphore != VK_NULL_HANDLE) {
+                vkDestroySemaphore(m_device, m_defaultStream.timelineSemaphore, nullptr);
+                m_defaultStream.timelineSemaphore = VK_NULL_HANDLE;
+            }
+            if (m_cmdPool != VK_NULL_HANDLE) {
+                vkDestroyCommandPool(m_device, m_cmdPool, nullptr);
+                m_cmdPool = VK_NULL_HANDLE;
+            }
+
+            vkDestroyDevice(m_device, nullptr);
+            m_device = VK_NULL_HANDLE;
+        }
+
+        if (m_instance != VK_NULL_HANDLE) {
+            vkDestroyInstance(m_instance, nullptr);
+            m_instance = VK_NULL_HANDLE;
+        }
+
+        m_initialized = false;
     }
 
 private:
@@ -856,6 +955,7 @@ CUDART_API cudaError_t cudaDeviceSynchronize(void) {
 }
 
 CUDART_API cudaError_t cudaDeviceReset(void) {
+    VulkanRuntime::get().cleanup();
     return cudaSuccess;
 }
 
@@ -884,7 +984,8 @@ CUDART_API cudaError_t cudaGetDeviceProperties(cudaDeviceProp* prop, int device)
     std::memset(prop, 0, sizeof(cudaDeviceProp));
     const auto& vkProps = VulkanRuntime::get().getDeviceProperties();
     std::strncpy(prop->name, vkProps.deviceName, sizeof(prop->name) - 1);
-    prop->totalGlobalMem = 8ULL * 1024 * 1024 * 1024; // 8 GB default
+    size_t totalLocal = VulkanRuntime::get().getTotalDeviceLocalMemory();
+    prop->totalGlobalMem = (totalLocal > 0) ? totalLocal : (8ULL * 1024 * 1024 * 1024);
     prop->sharedMemPerBlock = 64 * 1024;
     prop->regsPerBlock = 65536;
     prop->warpSize = 32;

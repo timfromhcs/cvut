@@ -471,8 +471,13 @@ NVCUDA_API CUresult CUDAAPI cuModuleGetFunction(CUfunction* hfunc, CUmodule hmod
         if (fs::exists(candidate)) {
             fn->spvPath = candidate;
         } else {
-            std::string fixture = "build/shaders/vector_add.spv";
-            if (fs::exists(fixture)) fn->spvPath = fixture;
+            std::string candidateDist = std::string("dist/shaders/") + name + ".spv";
+            if (fs::exists(candidateDist)) {
+                fn->spvPath = candidateDist;
+            } else {
+                delete fn;
+                return CUDA_ERROR_NOT_FOUND;
+            }
         }
     }
 
@@ -526,8 +531,10 @@ NVCUDA_API CUresult CUDAAPI cuLaunchKernel(
         for (size_t i = 0; extra[i] != nullptr; ++i) {
             if (extra[i] == reinterpret_cast<void*>(1) /* CU_LAUNCH_PARAM_BUFFER_POINTER */) {
                 bufferPtr = extra[i + 1];
-                bufferSize = *reinterpret_cast<size_t*>(extra[i + 3]);
-                break;
+            } else if (extra[i] == reinterpret_cast<void*>(2) /* CU_LAUNCH_PARAM_BUFFER_SIZE */) {
+                if (extra[i + 1]) {
+                    bufferSize = *reinterpret_cast<size_t*>(extra[i + 1]);
+                }
             }
         }
         if (bufferPtr && bufferSize > 0) {

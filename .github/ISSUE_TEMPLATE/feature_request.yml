@@ -1,0 +1,28 @@
+name: Feature Request
+description: Suggest an enhancement or new instruction lifting capability for CVUT
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Suggest an improvement or new feature for CVUT.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Is your feature request related to a problem?
+      description: A clear description of the problem or limitation.
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Describe the solution you'd like
+      description: Proposed architectural or instruction lifting solution.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context or Hardware Target
+      description: Any relevant SASS opcode specifications, benchmark targets, or real CUDA workloads.

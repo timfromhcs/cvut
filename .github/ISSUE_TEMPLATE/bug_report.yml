@@ -1,0 +1,48 @@
+name: Bug Report
+description: File a bug report with reproducible details
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting an issue with CVUT! Please provide evidence-backed information.
+  - type: input
+    id: environment
+    attributes:
+      label: System Environment
+      description: OS, Architecture, Compiler, Vulkan SDK version
+      placeholder: e.g. Windows 11 / Ubuntu 24.04, x86_64, Clang 18, Vulkan 1.3.280
+    validations:
+      required: true
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU & Driver Information
+      description: GPU model, driver version, Vulkan driver version
+      placeholder: e.g. AMD Radeon 780M, Driver 24.10.1, Vulkan 1.3.292
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: A clear and concise description of the failure.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal Reproducible Example
+      description: Steps or commands to reproduce the behavior.
+      value: |
+        1. ./scripts/build
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Execution Logs & Validation Output
+      description: Paste any error messages or Vulkan validation layer logs.
+      render: shell
