@@ -24,17 +24,29 @@ pub fn parse_cubin_instructions(bytes: &[u8]) -> Result<Vec<[u32; 4]>, String> {
         }
 
         let strtab_sh_offset = e_shoff + e_shstrndx * e_shentsize;
-        let strtab_offset = u64::from_le_bytes(bytes[strtab_sh_offset + 24..strtab_sh_offset + 32].try_into().unwrap()) as usize;
-        let strtab_size = u64::from_le_bytes(bytes[strtab_sh_offset + 32..strtab_sh_offset + 40].try_into().unwrap()) as usize;
+        let strtab_offset = u64::from_le_bytes(
+            bytes[strtab_sh_offset + 24..strtab_sh_offset + 32]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+        let strtab_size = u64::from_le_bytes(
+            bytes[strtab_sh_offset + 32..strtab_sh_offset + 40]
+                .try_into()
+                .unwrap(),
+        ) as usize;
         let strtab = &bytes[strtab_offset..strtab_offset + strtab_size];
 
         let mut text_data = None;
 
         for i in 0..e_shnum {
             let sh_offset = e_shoff + i * e_shentsize;
-            let sh_name = u32::from_le_bytes(bytes[sh_offset..sh_offset + 4].try_into().unwrap()) as usize;
-            let offset = u64::from_le_bytes(bytes[sh_offset + 24..sh_offset + 32].try_into().unwrap()) as usize;
-            let size = u64::from_le_bytes(bytes[sh_offset + 32..sh_offset + 40].try_into().unwrap()) as usize;
+            let sh_name =
+                u32::from_le_bytes(bytes[sh_offset..sh_offset + 4].try_into().unwrap()) as usize;
+            let offset =
+                u64::from_le_bytes(bytes[sh_offset + 24..sh_offset + 32].try_into().unwrap())
+                    as usize;
+            let size = u64::from_le_bytes(bytes[sh_offset + 32..sh_offset + 40].try_into().unwrap())
+                as usize;
 
             let name_end = strtab[sh_name..].iter().position(|&c| c == 0).unwrap_or(0);
             let name = std::str::from_utf8(&strtab[sh_name..sh_name + name_end]).unwrap_or("");
@@ -72,7 +84,10 @@ pub fn parse_raw_instructions(bytes: &[u8]) -> Result<Vec<[u32; 4]>, String> {
                 return Ok(instrs);
             }
         }
-        return Err(format!("Instruction stream size {} is not a multiple of 16 bytes", bytes.len()));
+        return Err(format!(
+            "Instruction stream size {} is not a multiple of 16 bytes",
+            bytes.len()
+        ));
     }
 
     let mut instrs = Vec::new();

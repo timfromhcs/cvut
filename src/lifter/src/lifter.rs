@@ -104,8 +104,18 @@ impl Lifter {
         // 4. Entry point (GLCompute = 5)
         // OpEntryPoint GLCompute %func_main "main" %var_global_id %var_local_id %var_workgroup_id
         let main_bytes = b"main\0\0\0\0";
-        let word0 = u32::from_le_bytes([main_bytes[0], main_bytes[1], main_bytes[2], main_bytes[3]]);
-        let entry_words = vec![5, func_main, word0, 0, var_global_id, var_local_id, var_workgroup_id, var_push_params];
+        let word0 =
+            u32::from_le_bytes([main_bytes[0], main_bytes[1], main_bytes[2], main_bytes[3]]);
+        let entry_words = vec![
+            5,
+            func_main,
+            word0,
+            0,
+            var_global_id,
+            var_local_id,
+            var_workgroup_id,
+            var_push_params,
+        ];
         module.emit_inst(15, &entry_words);
 
         // 5. Execution modes
@@ -148,7 +158,16 @@ impl Lifter {
         module.emit_inst(32, &[ptr_workgroup_float, 4, type_float]);
 
         // StorageClass::PushConstant = 9
-        module.emit_inst(30, &[type_push_params, type_ulong, type_ulong, type_ulong, type_uint]); // OpTypeStruct
+        module.emit_inst(
+            30,
+            &[
+                type_push_params,
+                type_ulong,
+                type_ulong,
+                type_ulong,
+                type_uint,
+            ],
+        ); // OpTypeStruct
         module.emit_inst(32, &[ptr_push_params, 9, type_push_params]);
         module.emit_inst(32, &[ptr_push_ulong, 9, type_ulong]);
         module.emit_inst(32, &[ptr_push_uint, 9, type_uint]);
@@ -215,15 +234,16 @@ impl Lifter {
     }
 
     pub fn lift(mut self, instrs: &[DecodedInstruction]) -> Vec<u32> {
-        let has_shared_mem = instrs.iter().any(|inst| {
-            matches!(inst.opcode, Opcode::STS | Opcode::LDS | Opcode::BarSync)
-        });
+        let has_shared_mem = instrs
+            .iter()
+            .any(|inst| matches!(inst.opcode, Opcode::STS | Opcode::LDS | Opcode::BarSync));
         if has_shared_mem {
             return crate::reduction_spv::REDUCTION_SPV_WORDS.to_vec();
         }
 
         // OpFunction %type_void None %type_func
-        self.module.emit_inst(54, &[self.type_void, self.func_main, 0, self.type_func]);
+        self.module
+            .emit_inst(54, &[self.type_void, self.func_main, 0, self.type_func]);
 
         let entry_label = self.module.alloc_id();
         self.module.emit_inst(248, &[entry_label]); // OpLabel
@@ -269,81 +289,141 @@ impl Lifter {
         // Extract Global Invocation ID X:
         // %ptr = OpAccessChain %ptr_input_uint %var_global_id %const_uint_0
         let ptr_gid_x = self.module.alloc_id();
-        self.module.emit_inst(65, &[self.ptr_input_uint, ptr_gid_x, self.var_global_id, self.const_uint_0]);
+        self.module.emit_inst(
+            65,
+            &[
+                self.ptr_input_uint,
+                ptr_gid_x,
+                self.var_global_id,
+                self.const_uint_0,
+            ],
+        );
         let val_gid_x = self.module.alloc_id();
-        self.module.emit_inst(61, &[self.type_uint, val_gid_x, ptr_gid_x]); // OpLoad
+        self.module
+            .emit_inst(61, &[self.type_uint, val_gid_x, ptr_gid_x]); // OpLoad
 
         // Store into R0
         self.module.emit_inst(62, &[reg_vars[&0], val_gid_x]); // OpStore
 
         // Extract push constant param 3 (count N):
         let ptr_param3 = self.module.alloc_id();
-        self.module.emit_inst(65, &[self.ptr_push_uint, ptr_param3, self.var_push_params, self.const_uint_3]);
+        self.module.emit_inst(
+            65,
+            &[
+                self.ptr_push_uint,
+                ptr_param3,
+                self.var_push_params,
+                self.const_uint_3,
+            ],
+        );
         let val_n = self.module.alloc_id();
-        self.module.emit_inst(61, &[self.type_uint, val_n, ptr_param3]);
+        self.module
+            .emit_inst(61, &[self.type_uint, val_n, ptr_param3]);
         self.module.emit_inst(62, &[reg_vars[&3], val_n]);
 
         // Load 64-bit pointers from push constants:
         // a = param 0, b = param 1, c = param 2
         let ptr_p0 = self.module.alloc_id();
-        self.module.emit_inst(65, &[self.ptr_push_ulong, ptr_p0, self.var_push_params, self.const_uint_0]);
+        self.module.emit_inst(
+            65,
+            &[
+                self.ptr_push_ulong,
+                ptr_p0,
+                self.var_push_params,
+                self.const_uint_0,
+            ],
+        );
         let val_p0 = self.module.alloc_id();
-        self.module.emit_inst(61, &[self.type_ulong, val_p0, ptr_p0]);
+        self.module
+            .emit_inst(61, &[self.type_ulong, val_p0, ptr_p0]);
 
         let ptr_p1 = self.module.alloc_id();
-        self.module.emit_inst(65, &[self.ptr_push_ulong, ptr_p1, self.var_push_params, self.const_uint_1]);
+        self.module.emit_inst(
+            65,
+            &[
+                self.ptr_push_ulong,
+                ptr_p1,
+                self.var_push_params,
+                self.const_uint_1,
+            ],
+        );
         let val_p1 = self.module.alloc_id();
-        self.module.emit_inst(61, &[self.type_ulong, val_p1, ptr_p1]);
+        self.module
+            .emit_inst(61, &[self.type_ulong, val_p1, ptr_p1]);
 
         let ptr_p2 = self.module.alloc_id();
-        self.module.emit_inst(65, &[self.ptr_push_ulong, ptr_p2, self.var_push_params, self.const_uint_2]);
+        self.module.emit_inst(
+            65,
+            &[
+                self.ptr_push_ulong,
+                ptr_p2,
+                self.var_push_params,
+                self.const_uint_2,
+            ],
+        );
         let val_p2 = self.module.alloc_id();
-        self.module.emit_inst(61, &[self.type_ulong, val_p2, ptr_p2]);
+        self.module
+            .emit_inst(61, &[self.type_ulong, val_p2, ptr_p2]);
 
         // ISETP: compare if gid_x < N
         let cond_id = self.module.alloc_id();
-        self.module.emit_inst(176, &[self.type_bool, cond_id, val_gid_x, val_n]); // OpULessThan
+        self.module
+            .emit_inst(176, &[self.type_bool, cond_id, val_gid_x, val_n]); // OpULessThan
 
         // Selection merge:
         self.module.emit_inst(247, &[exit_label, 0]); // OpSelectionMerge %exit_label None
-        self.module.emit_inst(250, &[cond_id, body_label, exit_label]); // OpBranchConditional
+        self.module
+            .emit_inst(250, &[cond_id, body_label, exit_label]); // OpBranchConditional
 
         // Body Block
         self.module.emit_inst(248, &[body_label]);
 
         // Compute 64-bit byte offset: (u64)gid_x * 4
         let gid_u64 = self.module.alloc_id();
-        self.module.emit_inst(113, &[self.type_ulong, gid_u64, val_gid_x]); // OpUConvert
+        self.module
+            .emit_inst(113, &[self.type_ulong, gid_u64, val_gid_x]); // OpUConvert
         let byte_offset = self.module.alloc_id();
-        self.module.emit_inst(132, &[self.type_ulong, byte_offset, gid_u64, self.const_ulong_4]); // OpIMul
+        self.module.emit_inst(
+            132,
+            &[self.type_ulong, byte_offset, gid_u64, self.const_ulong_4],
+        ); // OpIMul
 
         // Pointer A: val_p0 + byte_offset
         let addr_a = self.module.alloc_id();
-        self.module.emit_inst(128, &[self.type_ulong, addr_a, val_p0, byte_offset]); // OpIAdd
+        self.module
+            .emit_inst(128, &[self.type_ulong, addr_a, val_p0, byte_offset]); // OpIAdd
         let psb_ptr_a = self.module.alloc_id();
-        self.module.emit_inst(120, &[self.ptr_psb_float, psb_ptr_a, addr_a]); // OpConvertUToPtr
+        self.module
+            .emit_inst(120, &[self.ptr_psb_float, psb_ptr_a, addr_a]); // OpConvertUToPtr
 
         // Load A[gid_x]: Aligned 4 (Aligned flag = 2, alignment = 4)
         let loaded_a = self.module.alloc_id();
-        self.module.emit_inst(61, &[self.type_float, loaded_a, psb_ptr_a, 2, 4]); // OpLoad Aligned 4
+        self.module
+            .emit_inst(61, &[self.type_float, loaded_a, psb_ptr_a, 2, 4]); // OpLoad Aligned 4
 
         // Pointer B: val_p1 + byte_offset
         let addr_b = self.module.alloc_id();
-        self.module.emit_inst(128, &[self.type_ulong, addr_b, val_p1, byte_offset]);
+        self.module
+            .emit_inst(128, &[self.type_ulong, addr_b, val_p1, byte_offset]);
         let psb_ptr_b = self.module.alloc_id();
-        self.module.emit_inst(120, &[self.ptr_psb_float, psb_ptr_b, addr_b]);
+        self.module
+            .emit_inst(120, &[self.ptr_psb_float, psb_ptr_b, addr_b]);
         let loaded_b = self.module.alloc_id();
-        self.module.emit_inst(61, &[self.type_float, loaded_b, psb_ptr_b, 2, 4]);
+        self.module
+            .emit_inst(61, &[self.type_float, loaded_b, psb_ptr_b, 2, 4]);
 
         // Compute A + B
         let sum_result = self.module.alloc_id();
-        self.module.emit_inst(129, &[self.type_float, sum_result, loaded_a, loaded_b]); // OpFAdd
+        self.module
+            .emit_inst(129, &[self.type_float, sum_result, loaded_a, loaded_b]); // OpFAdd
 
         // Pointer C: val_p2 + byte_offset
         let addr_c = self.module.alloc_id();
-        self.module.emit_inst(128, &[self.type_ulong, addr_c, val_p2, byte_offset]);
+        self.module
+            .emit_inst(128, &[self.type_ulong, addr_c, val_p2, byte_offset]);
         let psb_ptr_c = self.module.alloc_id();
-        self.module.emit_inst(120, &[self.ptr_psb_float, psb_ptr_c, addr_c]);
+        self.module
+            .emit_inst(120, &[self.ptr_psb_float, psb_ptr_c, addr_c]);
 
         // Store to C[gid_x]: Aligned 4
         self.module.emit_inst(62, &[psb_ptr_c, sum_result, 2, 4]); // OpStore Aligned 4
@@ -367,22 +447,20 @@ mod tests {
     #[test]
     fn test_lift_vector_add() {
         let lifter = Lifter::new();
-        let instrs = vec![
-            DecodedInstruction {
-                opcode: Opcode::FADD,
-                pred_reg: 7,
-                pred_inv: false,
-                dst: 14,
-                src0: 12,
-                src1: 13,
-                src2: 255,
-                imm32: 0,
-                offset: 0,
-                target_offset: 0,
-                special_reg: SpecialReg::Unknown,
-                raw: [0; 4],
-            },
-        ];
+        let instrs = vec![DecodedInstruction {
+            opcode: Opcode::FADD,
+            pred_reg: 7,
+            pred_inv: false,
+            dst: 14,
+            src0: 12,
+            src1: 13,
+            src2: 255,
+            imm32: 0,
+            offset: 0,
+            target_offset: 0,
+            special_reg: SpecialReg::Unknown,
+            raw: [0; 4],
+        }];
         let spv = lifter.lift(&instrs);
         assert_eq!(spv[0], 0x07230203);
         assert_eq!(spv[1], 0x00010500);
@@ -392,22 +470,20 @@ mod tests {
     #[test]
     fn test_lift_reduction_shared_mem() {
         let lifter = Lifter::new();
-        let instrs = vec![
-            DecodedInstruction {
-                opcode: Opcode::STS,
-                pred_reg: 7,
-                pred_inv: false,
-                dst: 255,
-                src0: 0,
-                src1: 4,
-                src2: 255,
-                imm32: 0,
-                offset: 0,
-                target_offset: 0,
-                special_reg: SpecialReg::Unknown,
-                raw: [0; 4],
-            },
-        ];
+        let instrs = vec![DecodedInstruction {
+            opcode: Opcode::STS,
+            pred_reg: 7,
+            pred_inv: false,
+            dst: 255,
+            src0: 0,
+            src1: 4,
+            src2: 255,
+            imm32: 0,
+            offset: 0,
+            target_offset: 0,
+            special_reg: SpecialReg::Unknown,
+            raw: [0; 4],
+        }];
         let spv = lifter.lift(&instrs);
         assert_eq!(spv[0], 0x07230203);
         assert_eq!(spv.len(), 645);

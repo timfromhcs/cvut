@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
+#![allow(clippy::upper_case_acronyms)]
+#![allow(clippy::manual_is_multiple_of)]
+
 mod decoder;
 mod elf;
 mod lifter;
@@ -63,7 +66,10 @@ fn main() {
         }
     };
 
-    println!("[SASS_LIFTER] Parsed {} 128-bit SASS instructions.", raw_instrs.len());
+    println!(
+        "[SASS_LIFTER] Parsed {} 128-bit SASS instructions.",
+        raw_instrs.len()
+    );
 
     let mut decoded = Vec::new();
     for inst in &raw_instrs {
@@ -89,5 +95,9 @@ fn main() {
         exit(1);
     }
 
-    println!("[SASS_LIFTER] Successfully lifted SASS to SPIR-V: {} ({} bytes)", output_path, spv_bytes.len());
+    println!(
+        "[SASS_LIFTER] Successfully lifted SASS to SPIR-V: {} ({} bytes)",
+        output_path,
+        spv_bytes.len()
+    );
 }
