@@ -36,13 +36,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-24.04
-            shell: bash
-          - os: windows-2022
-            shell: pwsh
-          - os: macos-14
-            shell: bash
+        os: [ ubuntu-24.04, windows-2022, macos-14 ]
 
     steps:
       - name: Checkout Code
@@ -83,7 +77,6 @@ jobs:
 
       # Unified Build Command (POSIX & Windows)
       - name: Central Build (All Platforms)
-        shell: ${{ matrix.shell }}
         run: python scripts/build.py
 
       # Central Automated Tests
