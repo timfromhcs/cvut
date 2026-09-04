@@ -129,7 +129,7 @@ def main():
     log("4. Compiling CUDA Runtime library...")
     if is_win:
         cudart_out = "build/lib/cudart64_12.dll"
-        run_cmd([cxx] + cxx_flags + ["-shared", "-fPIC", "src/runtime/cuda_runtime.cpp"] + ld_flags + ["-o", cudart_out])
+        run_cmd([cxx] + cxx_flags + ["-shared", "src/runtime/cuda_runtime.cpp"] + ld_flags + ["-o", cudart_out])
         # Also copy / create cudart.dll symlink/copy for compatibility
         shutil.copy2(cudart_out, "build/lib/cudart.dll")
         shutil.copy2(cudart_out, "build/bin/cudart64_12.dll")
@@ -148,7 +148,7 @@ def main():
     log("5. Compiling CUDA Driver API library...")
     if is_win:
         nvcuda_out = "build/bin/nvcuda.dll"
-        run_cmd([cxx] + cxx_flags + ["-shared", "-fPIC", "src/runtime/nvcuda_driver.cpp", "src/runtime/cuda_runtime.cpp"] + ld_flags + ["-o", nvcuda_out])
+        run_cmd([cxx] + cxx_flags + ["-shared", "-static", "src/runtime/nvcuda_driver.cpp", "src/runtime/cuda_runtime.cpp"] + ld_flags + ["-o", nvcuda_out])
         shutil.copy2(nvcuda_out, "build/lib/nvcuda.dll")
         if os.path.exists("build/bin/nvcuda.lib"):
             shutil.copy2("build/bin/nvcuda.lib", "build/lib/nvcuda.lib")
