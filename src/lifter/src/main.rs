@@ -2,6 +2,7 @@
 mod decoder;
 mod elf;
 mod lifter;
+mod reduction_spv;
 mod spirv;
 
 use std::env;

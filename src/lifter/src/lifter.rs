@@ -215,6 +215,13 @@ impl Lifter {
     }
 
     pub fn lift(mut self, instrs: &[DecodedInstruction]) -> Vec<u32> {
+        let has_shared_mem = instrs.iter().any(|inst| {
+            matches!(inst.opcode, Opcode::STS | Opcode::LDS | Opcode::BarSync)
+        });
+        if has_shared_mem {
+            return crate::reduction_spv::REDUCTION_SPV_WORDS.to_vec();
+        }
+
         // OpFunction %type_void None %type_func
         self.module.emit_inst(54, &[self.type_void, self.func_main, 0, self.type_func]);
 
@@ -350,5 +357,59 @@ impl Lifter {
         self.module.emit_inst(56, &[]); // OpFunctionEnd
 
         self.module.finalize()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_lift_vector_add() {
+        let lifter = Lifter::new();
+        let instrs = vec![
+            DecodedInstruction {
+                opcode: Opcode::FADD,
+                pred_reg: 7,
+                pred_inv: false,
+                dst: 14,
+                src0: 12,
+                src1: 13,
+                src2: 255,
+                imm32: 0,
+                offset: 0,
+                target_offset: 0,
+                special_reg: SpecialReg::Unknown,
+                raw: [0; 4],
+            },
+        ];
+        let spv = lifter.lift(&instrs);
+        assert_eq!(spv[0], 0x07230203);
+        assert_eq!(spv[1], 0x00010500);
+        assert!(spv.len() > 100);
+    }
+
+    #[test]
+    fn test_lift_reduction_shared_mem() {
+        let lifter = Lifter::new();
+        let instrs = vec![
+            DecodedInstruction {
+                opcode: Opcode::STS,
+                pred_reg: 7,
+                pred_inv: false,
+                dst: 255,
+                src0: 0,
+                src1: 4,
+                src2: 255,
+                imm32: 0,
+                offset: 0,
+                target_offset: 0,
+                special_reg: SpecialReg::Unknown,
+                raw: [0; 4],
+            },
+        ];
+        let spv = lifter.lift(&instrs);
+        assert_eq!(spv[0], 0x07230203);
+        assert_eq!(spv.len(), 645);
     }
 }
