@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PYTHON="${PYTHON:-python3}"
+if ! command -v "$PYTHON" &>/dev/null; then
+    PYTHON=python
+fi
+exec "$PYTHON" "$DIR/validate.py" "$@"
