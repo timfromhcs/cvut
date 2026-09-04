@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/timfromhcs/cvut/actions"><img src="https://img.shields.io/github/actions/workflow/status/timfromhcs/cvut/release.yml?branch=main&style=for-the-badge&logo=githubactions&logoColor=white&label=CI%2FCD" alt="CI/CD Status"/></a>
+  <a href="https://github.com/timfromhcs/cvut/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/timfromhcs/cvut/ci.yml?branch=main&style=for-the-badge&logo=githubactions&logoColor=white&label=CI%2FCD" alt="CI/CD Status"/></a>
   <a href="https://www.vulkan.org/"><img src="https://img.shields.io/badge/VULKAN-1.3%20SPIR--V%20COMPUTE-red?style=for-the-badge&logo=vulkan&logoColor=white" alt="Vulkan 1.3"/></a>
   <a href="docs/"><img src="https://img.shields.io/badge/SASS-sm__70%20..%20sm__90-blue?style=for-the-badge" alt="SASS sm_70..sm_90"/></a>
   <a href="src/runtime/"><img src="https://img.shields.io/badge/DRIVER%20API-nvcuda.dll%20v12.4-green?style=for-the-badge" alt="Driver API"/></a>
