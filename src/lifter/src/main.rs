@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
+#![allow(unknown_lints)]
 #![allow(clippy::upper_case_acronyms)]
 #![allow(clippy::manual_is_multiple_of)]
+#![allow(clippy::chunks_exact_to_as_chunks)]
 
 mod decoder;
 mod elf;

@@ -78,8 +78,9 @@ pub fn parse_raw_instructions(bytes: &[u8]) -> Result<Vec<[u32; 4]>, String> {
                 .collect();
             if words.len() % 4 == 0 && !words.is_empty() {
                 let mut instrs = Vec::new();
-                for chunk in words.chunks_exact(4) {
-                    instrs.push([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                let (chunks, _) = words.as_chunks::<4>();
+                for chunk in chunks {
+                    instrs.push(*chunk);
                 }
                 return Ok(instrs);
             }
@@ -91,7 +92,8 @@ pub fn parse_raw_instructions(bytes: &[u8]) -> Result<Vec<[u32; 4]>, String> {
     }
 
     let mut instrs = Vec::new();
-    for chunk in bytes.chunks_exact(16) {
+    let (chunks, _) = bytes.as_chunks::<16>();
+    for chunk in chunks {
         let w0 = u32::from_le_bytes(chunk[0..4].try_into().unwrap());
         let w1 = u32::from_le_bytes(chunk[4..8].try_into().unwrap());
         let w2 = u32::from_le_bytes(chunk[8..12].try_into().unwrap());
