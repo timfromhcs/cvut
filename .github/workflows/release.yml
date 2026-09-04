@@ -33,70 +33,91 @@ jobs:
 
       - name: Setup Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.os == 'macos-14' && 'aarch64-apple-darwin' || '' }}
 
-      # Linux Setup & Build
-      - name: Install Dependencies (Linux)
-        if: matrix.os == 'ubuntu-24.04'
+      # macOS Native Setup & Build
+      - name: Install Vulkan & MoltenVK (macOS)
+        if: runner.os == 'macOS'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libvulkan-dev vulkan-tools glslang-tools spirv-tools clang
+          brew install molten-vk vulkan-headers vulkan-loader spirv-tools
+          echo "VULKAN_SDK=$(brew --prefix molten-vk)" >> $GITHUB_ENV
 
-      - name: Build CVUT (Linux)
-        if: matrix.os == 'ubuntu-24.04'
+      - name: Build CVUT (macOS)
+        if: runner.os == 'macOS'
         run: |
           mkdir -p build/bin build/lib dist/bin dist/lib dist/include
           cargo build --release --manifest-path src/lifter/Cargo.toml
           cp src/lifter/target/release/sass_lifter build/bin/
-          clang++ -std=c++20 -shared -fPIC src/runtime/cuda_runtime.cpp -lvulkan -o build/lib/libcudart.so
-          clang++ -std=c++20 -shared -fPIC src/runtime/nvcuda_driver.cpp src/runtime/cuda_runtime.cpp -lvulkan -o build/lib/libcuda.so
-          cp build/lib/* dist/lib/
-          cp build/bin/* dist/bin/
+          
+          VK_INC="-I$(brew --prefix vulkan-headers)/include"
+          VK_LIB="-L$(brew --prefix vulkan-loader)/lib -lvulkan"
+
+          clang++ -std=c++20 -shared -fPIC src/runtime/cuda_runtime.cpp $VK_INC -Isrc/runtime $VK_LIB -o build/lib/libcudart.dylib
+          clang++ -std=c++20 -shared -fPIC src/runtime/nvcuda_driver.cpp src/runtime/cuda_runtime.cpp $VK_INC -Isrc/runtime $VK_LIB -o build/lib/libcuda.dylib
+          
+          cp build/lib/* dist/lib/ 2>/dev/null || true
+          cp build/bin/* dist/bin/ 2>/dev/null || true
           cp src/runtime/*.h dist/include/
           tar -czf ${{ matrix.artifact_name }}.tar.gz -C dist .
 
-      # Windows Setup & Build
-      - name: Setup Vulkan SDK (Windows)
-        if: matrix.os == 'windows-2022'
-        uses: humbletim/setup-vulkan-sdk@v1.2.0
-        with:
-          vulkan-query-version: 1.3.268.0
-          vulkan-components: Vulkan-Headers, Vulkan-Loader
+      # Linux Native Setup & Build
+      - name: Install Vulkan SDK & Toolchain (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libvulkan-dev vulkan-tools spirv-tools clang llvm
+
+      - name: Build CVUT (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p build/bin build/lib dist/bin dist/lib dist/include
+          cargo build --release --manifest-path src/lifter/Cargo.toml
+          cp src/lifter/target/release/sass_lifter build/bin/
+          
+          clang++ -std=c++20 -shared -fPIC src/runtime/cuda_runtime.cpp -Isrc/runtime -lvulkan -o build/lib/libcudart.so
+          clang++ -std=c++20 -shared -fPIC src/runtime/nvcuda_driver.cpp src/runtime/cuda_runtime.cpp -Isrc/runtime -lvulkan -o build/lib/libcuda.so
+          clang++ -std=c++20 -shared -fPIC src/runtime/nvml_shim.cpp -Isrc/runtime -lvulkan -o build/lib/libnvidia-ml.so
+          clang++ -std=c++20 src/tools/nvidia_smi.cpp -Isrc/runtime -Lbuild/lib -lnvidia-ml -o build/bin/nvidia-smi
+          
+          cp build/lib/* dist/lib/ 2>/dev/null || true
+          cp build/bin/* dist/bin/ 2>/dev/null || true
+          cp src/runtime/*.h dist/include/
+          tar -czf ${{ matrix.artifact_name }}.tar.gz -C dist .
+
+      # Windows Native Setup & Build
+      - name: Install Vulkan SDK (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install vulkan-sdk -y --no-progress
+          $vulkanPath = (Get-ChildItem -Path "C:\VulkanSDK" | Sort-Object Name -Descending | Select-Object -First 1).FullName
+          echo "VULKAN_SDK=$vulkanPath" >> $env:GITHUB_ENV
+          echo "$vulkanPath\bin" >> $env:GITHUB_PATH
 
       - name: Build CVUT (Windows)
-        if: matrix.os == 'windows-2022'
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path build/bin, build/lib, dist/bin, dist/lib, dist/include | Out-Null
           cargo build --release --manifest-path src/lifter/Cargo.toml
           Copy-Item src/lifter/target/release/sass_lifter.exe build/bin/ -Force
-          clang++ -std=c++20 -shared -fPIC src/runtime/cuda_runtime.cpp -lvulkan -o build/lib/cudart64_12.dll
-          clang++ -std=c++20 -shared -fPIC -static src/runtime/nvcuda_driver.cpp src/runtime/cuda_runtime.cpp -lvulkan -o build/bin/nvcuda.dll
-          clang++ -std=c++20 -shared src/runtime/nvml_shim.cpp -lvulkan -o build/bin/nvml.dll
-          clang++ -std=c++20 src/tools/nvidia_smi.cpp -Lbuild/bin -lnvml -o build/bin/nvidia-smi.exe
-          Copy-Item build/bin/*.dll, build/bin/*.exe dist/bin/ -Force
-          Copy-Item build/lib/*.dll, build/lib/*.lib dist/lib/ -Force
-          Copy-Item src/runtime/*.h dist/include/ -Force
+
+          $vulkanPath = $env:VULKAN_SDK
+          if (-not $vulkanPath -or -not (Test-Path $vulkanPath)) {
+              $vulkanPath = (Get-ChildItem -Path "C:\VulkanSDK" | Sort-Object Name -Descending | Select-Object -First 1).FullName
+          }
+          Write-Host "Using Vulkan SDK at: $vulkanPath"
+          $vkInc = "$vulkanPath\Include"
+          $vkLibDir = "$vulkanPath\Lib"
+
+          clang++ -std=c++20 -shared -fPIC src/runtime/cuda_runtime.cpp -I"$vkInc" -Isrc/runtime -L"$vkLibDir" -lvulkan-1 -o build/lib/cudart64_12.dll
+          clang++ -std=c++20 -shared -fPIC -static src/runtime/nvcuda_driver.cpp src/runtime/cuda_runtime.cpp -I"$vkInc" -Isrc/runtime -L"$vkLibDir" -lvulkan-1 -o build/bin/nvcuda.dll
+          clang++ -std=c++20 -shared src/runtime/nvml_shim.cpp -I"$vkInc" -Isrc/runtime -L"$vkLibDir" -lvulkan-1 -o build/bin/nvml.dll
+          clang++ -std=c++20 src/tools/nvidia_smi.cpp -I"$vkInc" -Isrc/runtime -Lbuild/bin -lnvml -o build/bin/nvidia-smi.exe
+
+          Copy-Item build/bin/*.dll, build/bin/*.exe dist/bin/ -Force -ErrorAction SilentlyContinue
+          Copy-Item build/lib/*.dll, build/lib/*.lib dist/lib/ -Force -ErrorAction SilentlyContinue
+          Copy-Item src/runtime/*.h dist/include/ -Force -ErrorAction SilentlyContinue
           Compress-Archive -Path dist/* -DestinationPath "${{ matrix.artifact_name }}.zip" -Force
-
-      # macOS Setup & Build
-      - name: Install Dependencies (macOS)
-        if: matrix.os == 'macos-14'
-        run: |
-          brew install molten-vk glslang spirv-tools
-          mkdir -p build/bin build/lib dist/bin dist/lib dist/include
-
-      - name: Build CVUT (macOS)
-        if: matrix.os == 'macos-14'
-        run: |
-          cargo build --release --manifest-path src/lifter/Cargo.toml
-          cp src/lifter/target/release/sass_lifter build/bin/
-          clang++ -std=c++20 -shared -fPIC src/runtime/cuda_runtime.cpp -lvulkan -o build/lib/libcudart.dylib || true
-          cp -r build/bin dist/ || true
-          cp -r build/lib dist/ || true
-          cp src/runtime/*.h dist/include/
-          tar -czf ${{ matrix.artifact_name }}.tar.gz -C dist .
 
       - name: Upload Build Artifact
         uses: actions/upload-artifact@v4
@@ -108,7 +129,7 @@ jobs:
     name: Publish GitHub Release
     needs: build-matrix
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
