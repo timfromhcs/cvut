@@ -59,3 +59,35 @@ impl SpirvModule {
         full_binary
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_spirv_header_generation() {
+        let mut module = SpirvModule::new();
+        let id1 = module.alloc_id();
+        let id2 = module.alloc_id();
+        assert_eq!(id1, 1);
+        assert_eq!(id2, 2);
+
+        module.emit_inst(17, &[1]); // OpCapability Shader
+        let binary = module.finalize();
+
+        assert_eq!(binary[0], 0x07230203); // Magic
+        assert_eq!(binary[1], 0x00010500); // SPIR-V 1.5
+        assert_eq!(binary[3], 3); // next_id was 3
+        assert_eq!(binary[5], (2 << 16) | 17); // word count 2, opcode 17
+        assert_eq!(binary[6], 1); // operand
+    }
+
+    #[test]
+    fn test_spirv_string_emission() {
+        let mut module = SpirvModule::new();
+        module.emit_string(10, None, "test");
+        let binary = module.finalize();
+        // Check that finalize succeeded and emitted instructions
+        assert!(binary.len() > 5);
+    }
+}

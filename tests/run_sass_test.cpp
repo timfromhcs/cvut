@@ -23,20 +23,30 @@ int main(int argc, char** argv) {
     }
 
     std::string lifted_spv = "build/shaders/reduction_lifted.spv";
+    std::string lifter_cmd;
 #ifdef _WIN32
-    std::string lifter_cmd = ".\\src\\lifter\\target\\release\\sass_lifter.exe --input " + cubin_path + " --output " + lifted_spv + " >nul 2>&1";
+    lifter_cmd = ".\\build\\bin\\sass_lifter.exe --input " + cubin_path + " --output " + lifted_spv;
     std::string val_cmd = "spirv-val " + lifted_spv + " >nul 2>&1";
 #else
-    std::string lifter_cmd = "./src/lifter/target/release/sass_lifter --input " + cubin_path + " --output " + lifted_spv + " >/dev/null 2>&1";
+    lifter_cmd = "./build/bin/sass_lifter --input " + cubin_path + " --output " + lifted_spv;
     std::string val_cmd = "spirv-val " + lifted_spv + " >/dev/null 2>&1";
 #endif
 
     int ret = std::system(lifter_cmd.c_str());
     if (ret != 0) {
-        // Fallback to direct lifter path if relative from build
+        // Fallback to cargo release target path
+#ifdef _WIN32
+        lifter_cmd = ".\\src\\lifter\\target\\release\\sass_lifter.exe --input " + cubin_path + " --output " + lifted_spv;
+#else
+        lifter_cmd = "./src/lifter/target/release/sass_lifter --input " + cubin_path + " --output " + lifted_spv;
+#endif
+        ret = std::system(lifter_cmd.c_str());
+    }
+    if (ret != 0) {
         lifter_cmd = "sass_lifter --input " + cubin_path + " --output " + lifted_spv;
         ret = std::system(lifter_cmd.c_str());
     }
+    assert(ret == 0);
 
     // Validate lifted SPIR-V
     ret = std::system(val_cmd.c_str());
@@ -62,7 +72,7 @@ int main(int argc, char** argv) {
     push.output_data = reinterpret_cast<uint64_t>(d_output);
     push.n = static_cast<uint32_t>(NUM_ELEMENTS);
 
-    cudaLaunchSpirv("build/shaders/reduction.spv", dim3(1, 1, 1), dim3(256, 1, 1), &push, sizeof(push), nullptr);
+    cudaLaunchSpirv(lifted_spv.c_str(), dim3(1, 1, 1), dim3(256, 1, 1), &push, sizeof(push), nullptr);
     cudaDeviceSynchronize();
 
     float h_result = 0.0f;

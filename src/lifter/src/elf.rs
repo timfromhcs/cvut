@@ -85,3 +85,35 @@ pub fn parse_raw_instructions(bytes: &[u8]) -> Result<Vec<[u32; 4]>, String> {
     }
     Ok(instrs)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_raw_instructions_16byte() {
+        let raw = [1u8; 32];
+        let instrs = parse_raw_instructions(&raw).unwrap();
+        assert_eq!(instrs.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_raw_instructions_invalid_size() {
+        let raw = [1u8; 15];
+        assert!(parse_raw_instructions(&raw).is_err());
+    }
+
+    #[test]
+    fn test_parse_text_hex_instructions() {
+        let text = b"0x00000001 0x00000002 0x00000003 0x00000004";
+        let instrs = parse_raw_instructions(text).unwrap();
+        assert_eq!(instrs.len(), 1);
+        assert_eq!(instrs[0], [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn test_parse_cubin_too_small() {
+        let bytes = b"\x7fELF_short";
+        assert!(parse_cubin_instructions(bytes).is_err());
+    }
+}
