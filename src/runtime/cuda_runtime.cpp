@@ -8,6 +8,7 @@
 #include <map>
 #include <string>
 #include <cstring>
+#include <cstdio>
 #include <iostream>
 #include <algorithm>
 #include <chrono>
@@ -88,13 +89,17 @@ public:
             appInfo.apiVersion = VK_API_VERSION_1_2;
             res = vkCreateInstance(&instanceInfo, nullptr, &m_instance);
             if (res != VK_SUCCESS) {
+                std::fprintf(stderr, "[CVUT] vkCreateInstance failed: %d\n", (int)res);
                 return cudaErrorInitializationError;
             }
         }
 
         uint32_t deviceCount = 0;
         vkEnumeratePhysicalDevices(m_instance, &deviceCount, nullptr);
-        if (deviceCount == 0) return cudaErrorNoDevice;
+        if (deviceCount == 0) {
+            std::fprintf(stderr, "[CVUT] no Vulkan physical devices enumerated\n");
+            return cudaErrorNoDevice;
+        }
 
         std::vector<VkPhysicalDevice> devices(deviceCount);
         vkEnumeratePhysicalDevices(m_instance, &deviceCount, devices.data());
@@ -124,7 +129,10 @@ public:
                 break;
             }
         }
-        if (m_computeQueueFamily == UINT32_MAX) return cudaErrorInitializationError;
+        if (m_computeQueueFamily == UINT32_MAX) {
+            std::fprintf(stderr, "[CVUT] no Vulkan compute queue family found\n");
+            return cudaErrorInitializationError;
+        }
 
         float queuePriority = 1.0f;
         VkDeviceQueueCreateInfo queueInfo = { VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO };
@@ -153,8 +161,14 @@ public:
         avail2.pNext = &avail12;
         vkGetPhysicalDeviceFeatures2(m_physicalDevice, &avail2);
 
-        if (!avail12.bufferDeviceAddress) return cudaErrorNotSupported;
-        if (!avail12.timelineSemaphore) return cudaErrorNotSupported;
+        if (!avail12.bufferDeviceAddress) {
+            std::fprintf(stderr, "[CVUT] device lacks bufferDeviceAddress (required)\n");
+            return cudaErrorNotSupported;
+        }
+        if (!avail12.timelineSemaphore) {
+            std::fprintf(stderr, "[CVUT] device lacks timelineSemaphore (required)\n");
+            return cudaErrorNotSupported;
+        }
 
         VkPhysicalDeviceVulkan11Features v11Features = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES };
         v11Features.storageBuffer16BitAccess = avail11.storageBuffer16BitAccess;
@@ -203,9 +217,11 @@ public:
 
         res = vkCreateDevice(m_physicalDevice, &devCreateInfo, nullptr, &m_device);
         if (res != VK_SUCCESS) {
+            std::fprintf(stderr, "[CVUT] vkCreateDevice (full chain) failed: %d, retrying minimal chain\n", (int)res);
             devCreateInfo.pNext = &timelineFeatures;
             res = vkCreateDevice(m_physicalDevice, &devCreateInfo, nullptr, &m_device);
             if (res != VK_SUCCESS) {
+                std::fprintf(stderr, "[CVUT] vkCreateDevice (minimal chain) failed: %d\n", (int)res);
                 return cudaErrorInitializationError;
             }
         }
@@ -705,8 +721,9 @@ public:
     }
 
     cudaError_t launchSpirv(const char* spvPath, dim3 gridDim, dim3 blockDim, const void* pushConstants, size_t pushConstantsSize, cudaStream_t stream) {
-        cudaError_t err = initialize();
-        if (err != cudaSuccess) return err;
+        // Validate arguments BEFORE device initialization so invalid calls
+        // fail deterministically on every platform, including machines
+        // without a Vulkan device (headless CI runners).
         if (!spvPath) return cudaErrorInvalidValue;
         if (pushConstantsSize > 0 && !pushConstants) return cudaErrorInvalidValue;
         // Vulkan guarantees at least 128 bytes of push-constant storage.
@@ -714,6 +731,9 @@ public:
         // error instead of failing obscurely in pipeline layout creation.
         if (pushConstantsSize > 128) return cudaErrorInvalidValue;
         if (gridDim.x == 0 || gridDim.y == 0 || gridDim.z == 0) return cudaErrorInvalidConfiguration;
+
+        cudaError_t err = initialize();
+        if (err != cudaSuccess) return err;
 
         FILE* f = fopen(spvPath, "rb");
         if (!f) return cudaErrorFileNotFound;
