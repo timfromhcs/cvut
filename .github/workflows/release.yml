@@ -121,8 +121,9 @@ jobs:
           $vkInc = "$vulkanPath\Include"
           $vkLibDir = "$vulkanPath\Lib"
 
-          clang++ -std=c++20 -shared -fPIC src/runtime/cuda_runtime.cpp -I"$vkInc" -Isrc/runtime -L"$vkLibDir" -lvulkan-1 -o build/lib/cudart64_12.dll
-          clang++ -std=c++20 -shared -fPIC -static src/runtime/nvcuda_driver.cpp src/runtime/cuda_runtime.cpp -I"$vkInc" -Isrc/runtime -L"$vkLibDir" -lvulkan-1 -o build/bin/nvcuda.dll
+          # NOTE: no -fPIC on Windows (MSVC target rejects it; PIC is default).
+          clang++ -std=c++20 -shared src/runtime/cuda_runtime.cpp -I"$vkInc" -Isrc/runtime -L"$vkLibDir" -lvulkan-1 -o build/lib/cudart64_12.dll
+          clang++ -std=c++20 -shared -static src/runtime/nvcuda_driver.cpp src/runtime/cuda_runtime.cpp -I"$vkInc" -Isrc/runtime -L"$vkLibDir" -lvulkan-1 -o build/bin/nvcuda.dll
           clang++ -std=c++20 -shared src/runtime/nvml_shim.cpp -I"$vkInc" -Isrc/runtime -L"$vkLibDir" -lvulkan-1 -o build/bin/nvml.dll
           clang++ -std=c++20 src/tools/nvidia_smi.cpp -I"$vkInc" -Isrc/runtime -Lbuild/bin -lnvml -o build/bin/nvidia-smi.exe
 
@@ -145,7 +146,9 @@ jobs:
     name: Publish GitHub Release
     needs: build-matrix
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    # Publishing requires a tag (softprops fails with 'requires a tag' on
+    # manual dispatches). Dispatches validate the build matrix only.
+    if: startsWith(github.ref, 'refs/tags/v')
     steps:
       - name: Checkout Code
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
