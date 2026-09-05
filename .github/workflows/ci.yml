@@ -44,11 +44,12 @@ jobs:
 
       - name: Run cargo audit
         run: |
-          cargo generate-lockfile --manifest-path src/lifter/Cargo.toml
+          cd src/lifter
+          cargo generate-lockfile
           if ! command -v cargo-audit >/dev/null 2>&1; then
             cargo install --locked cargo-audit
           fi
-          cargo audit --manifest-path src/lifter/Cargo.toml
+          cargo audit
 
   build-and-test:
     name: Build & Test (${{ matrix.os }})
