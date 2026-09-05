@@ -30,6 +30,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI: SHA-pinned third-party actions, `cargo audit` security job, exact-artifact
   packaging verification, `spirv-val` over all shipped shaders, and honestly
   scoped Windows/macOS jobs (build + unit + negative, no hardware dispatch).
+- CI: explicit `toolchain: stable` on every pinned `dtolnay/rust-toolchain@v1`
+  invocation (the pinned revision requires the input; verified against the
+  action metadata at that SHA, which equals the v1 tag commit).
+- CI: Linux software-Vulkan ICD discovery instead of a hardcoded Lavapipe path
+  (stale path caused `VK_ERROR_INCOMPATIBLE_DRIVER` on current runners).
+- Tests: fail-fast `CVUT_CHECK` CUDA error diagnostics on all `run_test` paths.
+- Runtime: argument validation before device init in `cudaLaunchSpirv`, plus
+  concise stderr diagnostics on every initialization failure path.
 
 ### Fixed
 - Wrong SPIR-V opcode numbers in the generic emitter (58/82/83/131/174/226)

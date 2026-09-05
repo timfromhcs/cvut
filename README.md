@@ -102,7 +102,7 @@ CVUT uses an evidence-based verification hierarchy:
 | Platform / GPU Target | Environment | Runtime API | Driver API | SASS Lifter | Validation Layer | Status | Evidence Level |
 |---|---|:---:|:---:|:---:|:---:|:---:|:---:|
 | **AMD Radeon RDNA** | Windows 11 (MSVC/Clang 21) | ✅ PASS | ✅ PASS | ✅ PASS | ✅ 0 Errors | Verified | **Level 4** |
-| **Linux x86_64 (Lavapipe / Mesa)** | Ubuntu 24.04 (Clang 18) | ✅ PASS | ✅ PASS | ✅ PASS | ✅ 0 Errors | CI Verified | **Level 3** |
+| **Linux x86_64 (software Vulkan)** | Ubuntu 24.04 (Clang 18) | ✅ PASS | ✅ PASS | ✅ PASS | ✅ 0 Errors | CI Verified | **Level 3** |
 | **Windows x86_64 (CI Runner)** | Server 2022 (MSVC / Choco) | ✅ PASS | ✅ PASS | ✅ PASS | N/A | Build Verified | **Level 3** |
 | **Apple Silicon (M-Series)** | macOS 14 (MoltenVK) | 🔄 Build Only | 🔄 Build Only | ✅ PASS | N/A | Experimental | **Level 1** |
 | **Intel Arc (Alchemist/Battlemage)** | Vulkan 1.3 | ❓ Unknown | ❓ Unknown | ❓ Unknown | N/A | Not re-verified (no hardware in this pass) | **Level 1** |
@@ -111,8 +111,9 @@ CVUT uses an evidence-based verification hierarchy:
 > physical hardware in this pass: clean `scripts/build.py`, full `scripts/test.py`
 > (12/12 incl. the new negative suite), `spirv-val` over all lifted shaders, and
 > the suite re-run under `VK_LAYER_KHRONOS_validation` with no failures.
-> Linux Lavapipe and Windows/macOS CI rows are enforced by `.github/workflows/ci.yml`
-> (full dispatch on Lavapipe; build + unit + negative + `spirv-val` on headless
+> Linux software-Vulkan (llvmpipe/Lavapipe via loader ICD discovery) and
+> Windows/macOS jobs are enforced by `.github/workflows/ci.yml`
+> (full dispatch on software Vulkan; build + unit + negative + `spirv-val` on headless
 > runners). Intel Arc could not be re-verified here -- prior Level-2 evidence only.
 
 ### Mathematical Parity Matrix
