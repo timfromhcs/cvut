@@ -63,3 +63,58 @@ Instead of relying on undocumented or hallucinated instruction formats, CVUT map
   - `FADD` (0x021), `FMUL` (0x020), `FFMA` (0x023)
   - `HMMA` (Tensor Core GEMM, 0x23c)
   - `BAR.SYNC` (Barrier Synchronization, 0xb1d) -> `OpControlBarrier`
+
+---
+
+## 3. SASS Intermediate Representation & Lowering Scope (Hardened)
+
+Decoding (`decoder.rs`) is separated from validation and lowering (`ir.rs`,
+`lifter.rs`). Every decoded instruction maps to exactly one IR node
+(`SassOp`); operands (registers, predicates, immediates, offsets, branch
+targets) are explicit so the emitter cannot silently drop dependencies.
+
+**Lowered to SPIR-V per instruction** (256-entry register files, predicated
+`SelectionMerge` guards, structured control flow, `spirv-val` gated):
+`MOV`, `IADD3`, `IMAD`/`IMAD64`, `ISETP`, `FADD`, `FMUL`, `FFMA`, `S2R`
+(known special registers; lane-mask/clock lower to defined zero), `LDC`
+(element count modeled, other offsets zero), `BSSY`/`BSYNC`/`BAR.SYNC`
+(`OpControlBarrier`), `BRA` (resolved targets only), `EXIT`, `NOP`.
+
+**Explicitly unsupported (fail safely, CLI exit 2, never mistranslated)**:
+`HMMA` (needs `VK_KHR_cooperative_matrix`), `SHFL` (needs subgroup
+lowering), `LDSM`, reserved/unknown opcodes, unresolvable/misaligned branch
+targets, out-of-range operands.
+
+**Memory-model honesty**: the lifter has no kernel `.param` layout analysis,
+so SASS address registers cannot be soundly mapped to Vulkan push-constant
+bases. `LDG`/`STG` lower to ordered placeholders while the documented
+vector-add ABI epilogue (push constants: pointers + count) performs the
+observable transfer. `LDS`/`STS` lower to a module-scope 1024-float
+workgroup scratch array with indices clamped via `OpUMod`. Streams
+containing shared-memory/barrier patterns use the precompiled, validated
+reduction library kernel (`reduction_spv.rs`) as a pattern-matched fast
+path -- not general translation.
+
+---
+
+## 4. Runtime Safety Invariants
+
+- All ELF/cubin offsets and sizes use checked arithmetic and bounds validation;
+  malformed input returns structured errors, never panics.
+- `cudaMalloc` alignment math is overflow-guarded; `cuMemAllocPitch` and
+  `cuMemsetD32` element math is overflow-guarded.
+- Every `cudaMemcpy`/`cudaMemset` validates `[ptr, ptr+count)` against the
+  allocation registry (overflow-safe); out-of-range, freed, and unknown
+  pointers return errors instead of reaching Vulkan.
+- SPIR-V module loads are size-capped (64 MiB), magic-checked, fully read
+  checked; push constants are capped at the portable 128-byte limit.
+- CUDA contexts form a real per-thread stack; destroying a context detaches it
+  everywhere (no use-after-free via stale stack slots). Primary contexts are
+  per-device ref-counted.
+- Required Vulkan features (`bufferDeviceAddress`, `timelineSemaphore`) are
+  probed and gated; optional features (Int64/Float64/Float16) are enabled only
+  when reported. Unsupported devices fail with `cudaErrorNotSupported`.
+- Raw `cudaLaunchKernel` function-pointer launches return
+  `cudaErrorNotSupported` (SPIR-V path only); `cuModuleGetGlobal` returns
+  `CUDA_ERROR_NOT_FOUND` (globals unmodeled); events are host-side timestamps
+  (no device ordering -- documented limitation).
