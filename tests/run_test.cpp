@@ -9,6 +9,19 @@
 #include <cassert>
 #include <cstdint>
 
+// Fail fast with a diagnostic: silently ignoring CUDA errors lets broken
+// environments (no device, failed launch) masquerade as results and makes
+// verification meaningless.
+#define CVUT_CHECK(expr)                                                      \
+    do {                                                                      \
+        cudaError_t _e = (expr);                                              \
+        if (_e != cudaSuccess) {                                              \
+            std::cerr << "CUDA error at " __FILE__ ":" << __LINE__ << ": "    \
+                      << cudaGetErrorString(_e) << " (" #expr ")" << std::endl; \
+            return 1;                                                         \
+        }                                                                     \
+    } while (0)
+
 // Utility for float32 <-> float16 conversion (IEEE 754-2008)
 uint16_t float_to_half(float f) {
     uint32_t x;
@@ -76,9 +89,9 @@ int main(int argc, char** argv) {
         float* d_b = nullptr;
         float* d_c = nullptr;
 
-        cudaMalloc(reinterpret_cast<void**>(&d_a), buffer_size);
-        cudaMalloc(reinterpret_cast<void**>(&d_b), buffer_size);
-        cudaMalloc(reinterpret_cast<void**>(&d_c), buffer_size);
+        CVUT_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_a), buffer_size));
+        CVUT_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_b), buffer_size));
+        CVUT_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_c), buffer_size));
 
         std::vector<float> h_a(elements);
         std::vector<float> h_b(elements);
@@ -90,8 +103,8 @@ int main(int argc, char** argv) {
             h_gold[i] = h_a[i] + h_b[i];
         }
 
-        cudaMemcpy(d_a, h_a.data(), buffer_size, cudaMemcpyHostToDevice);
-        cudaMemcpy(d_b, h_b.data(), buffer_size, cudaMemcpyHostToDevice);
+        CVUT_CHECK(cudaMemcpy(d_a, h_a.data(), buffer_size, cudaMemcpyHostToDevice));
+        CVUT_CHECK(cudaMemcpy(d_b, h_b.data(), buffer_size, cudaMemcpyHostToDevice));
 
         struct PushParams {
             uint64_t a;
@@ -110,11 +123,12 @@ int main(int argc, char** argv) {
         cudaError_t launch_err = cudaLaunchSpirv("build/shaders/vector_add.spv", grid, block, &push, sizeof(push), nullptr);
         if (launch_err != cudaSuccess) {
             std::cerr << "cudaLaunchSpirv failed: " << cudaGetErrorString(launch_err) << std::endl;
+            return 1;
         }
-        cudaDeviceSynchronize();
+        CVUT_CHECK(cudaDeviceSynchronize());
 
         std::vector<float> h_c(elements, 0.0f);
-        cudaMemcpy(h_c.data(), d_c, buffer_size, cudaMemcpyDeviceToHost);
+        CVUT_CHECK(cudaMemcpy(h_c.data(), d_c, buffer_size, cudaMemcpyDeviceToHost));
 
         float max_diff = 0.0f;
         for (size_t i = 0; i < elements; ++i) {
@@ -140,8 +154,8 @@ int main(int argc, char** argv) {
         float* d_in = nullptr;
         float* d_out = nullptr;
 
-        cudaMalloc(reinterpret_cast<void**>(&d_in), buffer_size);
-        cudaMalloc(reinterpret_cast<void**>(&d_out), buffer_size);
+        CVUT_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_in), buffer_size));
+        CVUT_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_out), buffer_size));
 
         std::vector<float> h_in(total_elements);
         std::vector<float> h_gold(total_elements);
@@ -154,7 +168,7 @@ int main(int argc, char** argv) {
             }
         }
 
-        cudaMemcpy(d_in, h_in.data(), buffer_size, cudaMemcpyHostToDevice);
+        CVUT_CHECK(cudaMemcpy(d_in, h_in.data(), buffer_size, cudaMemcpyHostToDevice));
 
         struct PushConstants {
             uint64_t in_buf;
@@ -168,11 +182,11 @@ int main(int argc, char** argv) {
         dim3 grid(static_cast<unsigned int>((dim + 31) / 32), static_cast<unsigned int>((dim + 31) / 32), 1);
         dim3 block(32, 8, 1);
 
-        cudaLaunchSpirv("build/shaders/matrix_transpose.spv", grid, block, &push, sizeof(push), nullptr);
-        cudaDeviceSynchronize();
+        CVUT_CHECK(cudaLaunchSpirv("build/shaders/matrix_transpose.spv", grid, block, &push, sizeof(push), nullptr));
+        CVUT_CHECK(cudaDeviceSynchronize());
 
         std::vector<float> h_out(total_elements, 0.0f);
-        cudaMemcpy(h_out.data(), d_out, buffer_size, cudaMemcpyDeviceToHost);
+        CVUT_CHECK(cudaMemcpy(h_out.data(), d_out, buffer_size, cudaMemcpyDeviceToHost));
 
         uint64_t bit_diff = 0;
         for (size_t i = 0; i < total_elements; ++i) {
@@ -203,9 +217,9 @@ int main(int argc, char** argv) {
         void* d_b = nullptr;
         void* d_c = nullptr;
 
-        cudaMalloc(&d_a, size_a * sizeof(uint16_t));
-        cudaMalloc(&d_b, size_b * sizeof(uint16_t));
-        cudaMalloc(&d_c, size_c * sizeof(uint16_t));
+        CVUT_CHECK(cudaMalloc(&d_a, size_a * sizeof(uint16_t)));
+        CVUT_CHECK(cudaMalloc(&d_b, size_b * sizeof(uint16_t)));
+        CVUT_CHECK(cudaMalloc(&d_c, size_c * sizeof(uint16_t)));
 
         std::vector<uint16_t> h_a_fp16(size_a);
         std::vector<uint16_t> h_b_fp16(size_b);
@@ -223,8 +237,8 @@ int main(int argc, char** argv) {
             h_b_fp16[i] = float_to_half(val);
         }
 
-        cudaMemcpy(d_a, h_a_fp16.data(), size_a * sizeof(uint16_t), cudaMemcpyHostToDevice);
-        cudaMemcpy(d_b, h_b_fp16.data(), size_b * sizeof(uint16_t), cudaMemcpyHostToDevice);
+        CVUT_CHECK(cudaMemcpy(d_a, h_a_fp16.data(), size_a * sizeof(uint16_t), cudaMemcpyHostToDevice));
+        CVUT_CHECK(cudaMemcpy(d_b, h_b_fp16.data(), size_b * sizeof(uint16_t), cudaMemcpyHostToDevice));
 
         struct PushConstants {
             uint64_t a;
@@ -244,11 +258,11 @@ int main(int argc, char** argv) {
         dim3 grid(static_cast<unsigned int>((n + 15) / 16), static_cast<unsigned int>((m + 15) / 16), 1);
         dim3 block(16, 16, 1);
 
-        cudaLaunchSpirv("build/shaders/gemm_fp16.spv", grid, block, &push, sizeof(push), nullptr);
-        cudaDeviceSynchronize();
+        CVUT_CHECK(cudaLaunchSpirv("build/shaders/gemm_fp16.spv", grid, block, &push, sizeof(push), nullptr));
+        CVUT_CHECK(cudaDeviceSynchronize());
 
         std::vector<uint16_t> h_c_fp16(size_c, 0);
-        cudaMemcpy(h_c_fp16.data(), d_c, size_c * sizeof(uint16_t), cudaMemcpyDeviceToHost);
+        CVUT_CHECK(cudaMemcpy(h_c_fp16.data(), d_c, size_c * sizeof(uint16_t), cudaMemcpyDeviceToHost));
 
         // Verify sampled elements against CPU baseline
         float max_rel_diff = 0.0f;

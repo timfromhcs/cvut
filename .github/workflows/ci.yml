@@ -103,14 +103,24 @@ jobs:
       - name: Central Build (All Platforms)
         run: python scripts/build.py
 
-      # Full hardware/software execution matrix. Lavapipe provides a real
-      # Vulkan 1.3 driver on headless Linux runners, so a failure here is a
-      # real failure: it MUST fail the job (no fallback masking).
-      - name: Central Test Matrix (Linux, Lavapipe Vulkan)
+      # Full hardware/software execution matrix. A software Vulkan driver is
+      # required on headless Linux runners. The ICD filename varies across
+      # Mesa releases (lvp/llvmpipe), so discover it instead of hardcoding:
+      # a stale VK_ICD_FILENAMES path yields VK_ERROR_INCOMPATIBLE_DRIVER.
+      - name: Central Test Matrix (Linux, software Vulkan)
         if: runner.os == 'Linux'
         run: |
-          # Use lavapipe CPU Vulkan driver for automated testing on Linux CI runners
-          export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          echo "Available Vulkan ICDs:"
+          ls -la /usr/share/vulkan/icd.d/ || true
+          if [ -f /usr/share/vulkan/icd.d/lvp_icd.x86_64.json ]; then
+            export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          elif [ -f /usr/share/vulkan/icd.d/lvmpipe_icd.x86_64.json ]; then
+            export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvmpipe_icd.x86_64.json
+          else
+            echo "No pinned ICD matched; using loader default driver search."
+            unset VK_ICD_FILENAMES || true
+          fi
+          vulkaninfo --summary || true
           python3 scripts/test.py
 
       # Headless Windows/macOS runners have no executable Vulkan compute path
