@@ -6,6 +6,7 @@
 
 mod decoder;
 mod elf;
+mod ir;
 mod lifter;
 mod reduction_spv;
 mod spirv;
@@ -81,7 +82,16 @@ fn main() {
     }
 
     let lifter = lifter::Lifter::new();
-    let spv_words = lifter.lift(&decoded);
+    let spv_words = match lifter.try_lift(&decoded) {
+        Ok(words) => words,
+        Err(e) => {
+            eprintln!(
+                "Failed to lift SASS to SPIR-V (unsupported semantics): {}",
+                e
+            );
+            exit(2);
+        }
+    };
 
     let mut spv_bytes = Vec::with_capacity(spv_words.len() * 4);
     for word in spv_words {
