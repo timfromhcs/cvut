@@ -11,6 +11,7 @@
 #include <iostream>
 #include <algorithm>
 #include <chrono>
+#include <new>
 
 namespace {
 
@@ -138,18 +139,35 @@ public:
         timelineFeatures.pNext = &bdaFeatures;
         timelineFeatures.timelineSemaphore = VK_TRUE;
 
+        // Query actual device capabilities first: never assume optional
+        // hardware features exist. BDA and timeline semaphores are mandatory
+        // for CVUT's pointer model and sync engine; Int64/Float64/Float16 are
+        // enabled only when the driver reports them.
+        VkPhysicalDeviceFeatures avail10 = {};
+        vkGetPhysicalDeviceFeatures(m_physicalDevice, &avail10);
+
+        VkPhysicalDeviceVulkan11Features avail11 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES };
+        VkPhysicalDeviceVulkan12Features avail12 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES };
+        avail12.pNext = &avail11;
+        VkPhysicalDeviceFeatures2 avail2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
+        avail2.pNext = &avail12;
+        vkGetPhysicalDeviceFeatures2(m_physicalDevice, &avail2);
+
+        if (!avail12.bufferDeviceAddress) return cudaErrorNotSupported;
+        if (!avail12.timelineSemaphore) return cudaErrorNotSupported;
+
         VkPhysicalDeviceVulkan11Features v11Features = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES };
-        v11Features.storageBuffer16BitAccess = VK_TRUE;
+        v11Features.storageBuffer16BitAccess = avail11.storageBuffer16BitAccess;
 
         VkPhysicalDeviceVulkan12Features v12Features = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES };
         v12Features.pNext = &v11Features;
         v12Features.bufferDeviceAddress = VK_TRUE;
         v12Features.timelineSemaphore = VK_TRUE;
-        v12Features.shaderFloat16 = VK_TRUE;
+        v12Features.shaderFloat16 = avail12.shaderFloat16;
 
         VkPhysicalDeviceFeatures deviceFeatures = {};
-        deviceFeatures.shaderInt64 = VK_TRUE;
-        deviceFeatures.shaderFloat64 = VK_TRUE;
+        deviceFeatures.shaderInt64 = avail10.shaderInt64;
+        deviceFeatures.shaderFloat64 = avail10.shaderFloat64;
 
         VkDeviceCreateInfo devCreateInfo = { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
         devCreateInfo.pNext = &v12Features;
@@ -358,8 +376,10 @@ public:
 
         std::lock_guard<std::mutex> lock(m_mutex);
 
-        // 256-byte alignment
+        // 256-byte alignment with overflow guard (reject sizes near SIZE_MAX).
+        if (size > (size_t)-1 - 255) return cudaErrorMemoryAllocation;
         size_t alignedSize = (size + 255) & ~((size_t)255);
+        if (alignedSize < size) return cudaErrorMemoryAllocation; // wrapped
 
         // Fallback to dedicated allocation for blocks >= 64 MB
         if (alignedSize >= 64 * 1024 * 1024) {
@@ -470,13 +490,35 @@ public:
         auto it = m_allocations.upper_bound(addr);
         if (it != m_allocations.begin()) {
             --it;
-            if (addr >= it->first && addr < it->first + it->second.size) {
+            // Overflow-safe range check: addr >= base && (addr - base) < size.
+            if (addr >= it->first && (addr - it->first) < it->second.size) {
                 outAlloc = it->second;
-                offsetInAlloc = addr - it->first;
+                offsetInAlloc = (size_t)(addr - it->first);
                 return true;
             }
         }
         return false;
+    }
+
+    // Validate that [devAddr, devAddr + count) lies fully inside one live
+    // allocation. Caller must hold m_mutex. Returns the allocation on success.
+    cudaError_t checkRangeLocked(uint64_t devAddr, size_t count, Allocation& outAlloc, size_t& outOff) {
+        if (count == 0) return cudaErrorInvalidValue;
+        if (!findAllocation(devAddr, outAlloc, outOff)) return cudaErrorInvalidValue;
+        // outOff < size guaranteed by findAllocation, so (size - outOff) cannot wrap.
+        if (count > outAlloc.size - outOff) return cudaErrorInvalidValue;
+        return cudaSuccess;
+    }
+
+    // Public range probe used by memset paths before staging allocation.
+    cudaError_t checkDeviceRange(void* devPtr, size_t count) {
+        if (!devPtr || count == 0) return cudaErrorInvalidValue;
+        cudaError_t err = initialize();
+        if (err != cudaSuccess) return err;
+        std::lock_guard<std::mutex> lock(m_mutex);
+        Allocation a;
+        size_t off = 0;
+        return checkRangeLocked(reinterpret_cast<uint64_t>(devPtr), count, a, off);
     }
 
     cudaError_t memcpy(void* dst, const void* src, size_t count, cudaMemcpyKind kind, cudaStream_t stream = nullptr) {
@@ -499,7 +541,9 @@ public:
             uint64_t dstAddr = reinterpret_cast<uint64_t>(dst);
             Allocation dstAlloc;
             size_t off = 0;
-            if (!findAllocation(dstAddr, dstAlloc, off)) return cudaErrorInvalidValue;
+            if (checkRangeLocked(dstAddr, count, dstAlloc, off) != cudaSuccess) {
+                return cudaErrorInvalidValue;
+            }
 
             ensureStagingBufferSize(count);
             std::memcpy(m_staging.mappedPtr, src, count);
@@ -510,7 +554,9 @@ public:
             uint64_t srcAddr = reinterpret_cast<uint64_t>(src);
             Allocation srcAlloc;
             size_t off = 0;
-            if (!findAllocation(srcAddr, srcAlloc, off)) return cudaErrorInvalidValue;
+            if (checkRangeLocked(srcAddr, count, srcAlloc, off) != cudaSuccess) {
+                return cudaErrorInvalidValue;
+            }
 
             ensureStagingBufferSize(count);
             executeCopyBuffer(targetStream, srcAlloc.buffer, srcAlloc.offset + off, m_staging.buffer, 0, count);
@@ -521,7 +567,8 @@ public:
             uint64_t dstAddr = reinterpret_cast<uint64_t>(dst);
             Allocation srcAlloc, dstAlloc;
             size_t srcOff = 0, dstOff = 0;
-            if (!findAllocation(srcAddr, srcAlloc, srcOff) || !findAllocation(dstAddr, dstAlloc, dstOff)) {
+            if (checkRangeLocked(srcAddr, count, srcAlloc, srcOff) != cudaSuccess ||
+                checkRangeLocked(dstAddr, count, dstAlloc, dstOff) != cudaSuccess) {
                 return cudaErrorInvalidValue;
             }
             executeCopyBuffer(targetStream, srcAlloc.buffer, srcAlloc.offset + srcOff, dstAlloc.buffer, dstAlloc.offset + dstOff, count);
@@ -536,20 +583,28 @@ public:
         cudaError_t err = initialize();
         if (err != cudaSuccess) return err;
 
-        CUstream_st* stream = new CUstream_st();
+        CUstream_st* stream = new (std::nothrow) CUstream_st();
+        if (!stream) return cudaErrorMemoryAllocation;
         stream->queue = m_queue;
 
         VkCommandPoolCreateInfo poolInfo = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
         poolInfo.queueFamilyIndex = m_computeQueueFamily;
         poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-        vkCreateCommandPool(m_device, &poolInfo, nullptr, &stream->cmdPool);
+        if (vkCreateCommandPool(m_device, &poolInfo, nullptr, &stream->cmdPool) != VK_SUCCESS) {
+            delete stream;
+            return cudaErrorInitializationError;
+        }
 
         VkSemaphoreTypeCreateInfo stci = { VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO };
         stci.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
         stci.initialValue = 0;
 
         VkSemaphoreCreateInfo sci = { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, &stci };
-        vkCreateSemaphore(m_device, &sci, nullptr, &stream->timelineSemaphore);
+        if (vkCreateSemaphore(m_device, &sci, nullptr, &stream->timelineSemaphore) != VK_SUCCESS) {
+            vkDestroyCommandPool(m_device, stream->cmdPool, nullptr);
+            delete stream;
+            return cudaErrorInitializationError;
+        }
         stream->timelineValue = 0;
 
         *pStream = stream;
@@ -584,6 +639,36 @@ public:
 
         VkResult res = vkWaitSemaphores(m_device, &waitInfo, UINT64_MAX);
         return (res == VK_SUCCESS) ? cudaSuccess : cudaErrorLaunchFailure;
+    }
+
+    cudaError_t streamQuery(cudaStream_t stream) {
+        cudaError_t err = initialize();
+        if (err != cudaSuccess) return err;
+
+        CUstream_st* s = stream ? stream : &m_defaultStream;
+        if (s->timelineValue == 0) return cudaSuccess;
+
+        uint64_t counter = 0;
+        VkResult res = vkGetSemaphoreCounterValue(m_device, s->timelineSemaphore, &counter);
+        if (res != VK_SUCCESS) return cudaErrorLaunchFailure;
+        return (counter >= s->timelineValue) ? cudaSuccess : cudaErrorNotReady;
+    }
+
+    // Resolve a device pointer to its allocation base and size.
+    cudaError_t getAllocRange(void* devPtr, void** pBase, size_t* pSize) {
+        if (!devPtr || !pBase || !pSize) return cudaErrorInvalidValue;
+        cudaError_t err = initialize();
+        if (err != cudaSuccess) return err;
+        std::lock_guard<std::mutex> lock(m_mutex);
+        Allocation a;
+        size_t off = 0;
+        if (!findAllocation(reinterpret_cast<uint64_t>(devPtr), a, off)) {
+            return cudaErrorInvalidValue;
+        }
+        uint64_t base = reinterpret_cast<uint64_t>(devPtr) - off;
+        *pBase = reinterpret_cast<void*>(base);
+        *pSize = a.size;
+        return cudaSuccess;
     }
 
     cudaError_t deviceSynchronize() {
@@ -622,15 +707,42 @@ public:
     cudaError_t launchSpirv(const char* spvPath, dim3 gridDim, dim3 blockDim, const void* pushConstants, size_t pushConstantsSize, cudaStream_t stream) {
         cudaError_t err = initialize();
         if (err != cudaSuccess) return err;
+        if (!spvPath) return cudaErrorInvalidValue;
+        if (pushConstantsSize > 0 && !pushConstants) return cudaErrorInvalidValue;
+        // Vulkan guarantees at least 128 bytes of push-constant storage.
+        // Larger layouts are device-dependent; reject upfront with a clear
+        // error instead of failing obscurely in pipeline layout creation.
+        if (pushConstantsSize > 128) return cudaErrorInvalidValue;
+        if (gridDim.x == 0 || gridDim.y == 0 || gridDim.z == 0) return cudaErrorInvalidConfiguration;
 
         FILE* f = fopen(spvPath, "rb");
         if (!f) return cudaErrorFileNotFound;
-        fseek(f, 0, SEEK_END);
-        size_t spvSize = ftell(f);
-        fseek(f, 0, SEEK_SET);
+        if (fseek(f, 0, SEEK_END) != 0) {
+            fclose(f);
+            return cudaErrorInvalidValue;
+        }
+        long sizeLong = ftell(f);
+        if (sizeLong < 0) {
+            fclose(f);
+            return cudaErrorInvalidValue;
+        }
+        // Cap shader size at 64 MiB: guards against truncated/huge files and
+        // size_t truncation on 32-bit builds.
+        const long MAX_SPV_BYTES = 64L * 1024L * 1024L;
+        if (sizeLong < 20 || sizeLong % 4 != 0 || sizeLong > MAX_SPV_BYTES) {
+            fclose(f);
+            return cudaErrorInvalidValue;
+        }
+        size_t spvSize = static_cast<size_t>(sizeLong);
+        if (fseek(f, 0, SEEK_SET) != 0) {
+            fclose(f);
+            return cudaErrorInvalidValue;
+        }
         std::vector<uint32_t> spvData(spvSize / sizeof(uint32_t));
-        fread(spvData.data(), 1, spvSize, f);
+        size_t got = fread(spvData.data(), 1, spvSize, f);
         fclose(f);
+        if (got != spvSize) return cudaErrorInvalidValue;
+        if (spvData[0] != 0x07230203) return cudaErrorInvalidDeviceFunction;
 
         VkShaderModuleCreateInfo smci = { VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
         smci.codeSize = spvSize;
@@ -912,13 +1024,21 @@ CUDART_API cudaError_t cudaMemcpyAsync(void* dst, const void* src, size_t count,
 }
 
 CUDART_API cudaError_t cudaMemset(void* devPtr, int value, size_t count) {
-    if (!devPtr || count == 0) return cudaSuccess;
+    if (count == 0) return cudaSuccess;
+    if (!devPtr) return cudaErrorInvalidValue;
+    // Validate the range before staging a host-side fill buffer so
+    // out-of-range or freed pointers fail instead of overflowing Vulkan.
+    cudaError_t range = VulkanRuntime::get().checkDeviceRange(devPtr, count);
+    if (range != cudaSuccess) return range;
     std::vector<uint8_t> hostBuf(count, static_cast<uint8_t>(value));
     return VulkanRuntime::get().memcpy(devPtr, hostBuf.data(), count, cudaMemcpyHostToDevice, nullptr);
 }
 
 CUDART_API cudaError_t cudaMemsetAsync(void* devPtr, int value, size_t count, cudaStream_t stream) {
-    if (!devPtr || count == 0) return cudaSuccess;
+    if (count == 0) return cudaSuccess;
+    if (!devPtr) return cudaErrorInvalidValue;
+    cudaError_t range = VulkanRuntime::get().checkDeviceRange(devPtr, count);
+    if (range != cudaSuccess) return range;
     std::vector<uint8_t> hostBuf(count, static_cast<uint8_t>(value));
     return VulkanRuntime::get().memcpy(devPtr, hostBuf.data(), count, cudaMemcpyHostToDevice, stream);
 }
@@ -948,6 +1068,10 @@ CUDART_API cudaError_t cudaStreamDestroy(cudaStream_t stream) {
 
 CUDART_API cudaError_t cudaStreamSynchronize(cudaStream_t stream) {
     return VulkanRuntime::get().streamSynchronize(stream);
+}
+
+CUDART_API cudaError_t cudaStreamQuery(cudaStream_t stream) {
+    return VulkanRuntime::get().streamQuery(stream);
 }
 
 CUDART_API cudaError_t cudaDeviceSynchronize(void) {
@@ -1027,6 +1151,13 @@ CUDART_API cudaError_t cudaEventSynchronize(cudaEvent_t event) {
     return cudaSuccess;
 }
 
+CUDART_API cudaError_t cudaEventQuery(cudaEvent_t event) {
+    // CVUT events are host-side timestamps (see limitation notes): an event
+    // is complete once recorded. Unrecorded events report NotReady.
+    if (!event) return cudaErrorInvalidValue;
+    return event->isRecorded ? cudaSuccess : cudaErrorNotReady;
+}
+
 CUDART_API cudaError_t cudaEventElapsedTime(float* ms, cudaEvent_t start, cudaEvent_t end) {
     if (!ms || !start || !end) return cudaErrorInvalidValue;
     if (!start->isRecorded || !end->isRecorded) return cudaErrorInvalidResourceHandle;
@@ -1050,6 +1181,12 @@ CUDART_API const char* cudaGetErrorString(cudaError_t error) {
         case cudaErrorNoDevice: return "cudaErrorNoDevice";
         case cudaErrorInvalidDevice: return "cudaErrorInvalidDevice";
         case cudaErrorNotSupported: return "cudaErrorNotSupported";
+        case cudaErrorNotReady: return "cudaErrorNotReady";
+        case cudaErrorInvalidDeviceFunction: return "cudaErrorInvalidDeviceFunction";
+        case cudaErrorInvalidConfiguration: return "cudaErrorInvalidConfiguration";
+        case cudaErrorFileNotFound: return "cudaErrorFileNotFound";
+        case cudaErrorInvalidResourceHandle: return "cudaErrorInvalidResourceHandle";
+        case cudaErrorIllegalAddress: return "cudaErrorIllegalAddress";
         default: return "cudaErrorUnknown";
     }
 }
@@ -1071,8 +1208,12 @@ CUDART_API cudaError_t cudaPeekAtLastError(void) {
 }
 
 CUDART_API cudaError_t cudaLaunchKernel(const void* func, dim3 gridDim, dim3 blockDim, void** args, size_t sharedMem, cudaStream_t stream) {
+    (void)gridDim; (void)blockDim; (void)args; (void)sharedMem; (void)stream;
+    // Raw function-pointer launches are not supported: CVUT executes SPIR-V
+    // modules through cudaLaunchSpirv / cuLaunchKernel. Returning an explicit
+    // error instead of a fake success.
     if (!func) return cudaErrorInvalidDeviceFunction;
-    return cudaSuccess;
+    return cudaErrorNotSupported;
 }
 
 CUDART_API cudaError_t cudaLaunchSpirv(const char* spvPath, dim3 gridDim, dim3 blockDim, const void* pushConstants, size_t pushConstantsSize, cudaStream_t stream) {
@@ -1081,6 +1222,10 @@ CUDART_API cudaError_t cudaLaunchSpirv(const char* spvPath, dim3 gridDim, dim3 b
 
 CUDART_API cudaError_t cudaGetVulkanContext(void** pInstance, void** pPhysicalDevice, void** pDevice, void** pQueue, uint32_t* pQueueFamily) {
     return VulkanRuntime::get().getVulkanContext(pInstance, pPhysicalDevice, pDevice, pQueue, pQueueFamily);
+}
+
+CUDART_API cudaError_t cudaGetAllocRange(void* devPtr, void** pBase, size_t* pSize) {
+    return VulkanRuntime::get().getAllocRange(devPtr, pBase, pSize);
 }
 
 } // extern "C"

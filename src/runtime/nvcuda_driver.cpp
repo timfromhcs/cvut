@@ -11,6 +11,7 @@
 #include <mutex>
 #include <algorithm>
 #include <filesystem>
+#include <new>
 
 namespace fs = std::filesystem;
 
@@ -34,9 +35,28 @@ struct CUmod_st {
 };
 
 namespace {
-    thread_local CUcontext t_currentContext = nullptr;
+    // Real per-thread CUDA context stack. CUDA semantics: Push adds the
+    // context on top, Pop removes the top, SetCurrent replaces the top
+    // (attaching the given context), GetCurrent returns the top.
+    thread_local std::vector<CUcontext> t_ctxStack;
     std::mutex g_driverMutex;
     bool g_initialized = false;
+
+    // Primary-context registry: one retained context per device with a
+    // reference count, instead of leaking a fresh context per Retain call.
+    std::map<CUdevice, CUcontext> g_primaryCtx;
+    std::map<CUdevice, int> g_primaryRefcount;
+    std::map<CUcontext, CUdevice> g_ctxDevice;
+
+    CUcontext currentContextLocked() {
+        return t_ctxStack.empty() ? nullptr : t_ctxStack.back();
+    }
+
+    void eraseFromStack(CUcontext ctx) {
+        t_ctxStack.erase(
+            std::remove(t_ctxStack.begin(), t_ctxStack.end(), ctx),
+            t_ctxStack.end());
+    }
 }
 
 extern "C" {
@@ -162,10 +182,19 @@ NVCUDA_API CUresult CUDAAPI cuDeviceGetAttribute(int* pi, CUdevice_attribute att
 
 NVCUDA_API CUresult CUDAAPI cuCtxCreate_v2(CUcontext* pctx, unsigned int flags, CUdevice dev) {
     if (!pctx) return CUDA_ERROR_INVALID_VALUE;
-    CUcontext ctx = new CUctx_st();
+    int count = 0;
+    if (cudaGetDeviceCount(&count) != cudaSuccess || dev < 0 || dev >= count) {
+        return CUDA_ERROR_INVALID_DEVICE;
+    }
+    CUcontext ctx = new (std::nothrow) CUctx_st();
+    if (!ctx) return CUDA_ERROR_OUT_OF_MEMORY;
     ctx->device = dev;
     ctx->flags = flags;
-    t_currentContext = ctx;
+    {
+        std::lock_guard<std::mutex> lock(g_driverMutex);
+        g_ctxDevice[ctx] = dev;
+    }
+    t_ctxStack.push_back(ctx);
     *pctx = ctx;
     return CUDA_SUCCESS;
 }
@@ -176,8 +205,20 @@ NVCUDA_API CUresult CUDAAPI cuCtxCreate(CUcontext* pctx, unsigned int flags, CUd
 
 NVCUDA_API CUresult CUDAAPI cuCtxDestroy_v2(CUcontext ctx) {
     if (!ctx) return CUDA_SUCCESS;
-    if (t_currentContext == ctx) {
-        t_currentContext = nullptr;
+    // Detach everywhere: stack occurrences, primary registry, device map.
+    // Prevents use-after-free when a non-top stacked context is destroyed.
+    eraseFromStack(ctx);
+    {
+        std::lock_guard<std::mutex> lock(g_driverMutex);
+        g_ctxDevice.erase(ctx);
+        for (auto it = g_primaryCtx.begin(); it != g_primaryCtx.end();) {
+            if (it->second == ctx) {
+                g_primaryRefcount.erase(it->first);
+                it = g_primaryCtx.erase(it);
+            } else {
+                ++it;
+            }
+        }
     }
     delete ctx;
     return CUDA_SUCCESS;
@@ -188,7 +229,8 @@ NVCUDA_API CUresult CUDAAPI cuCtxDestroy(CUcontext ctx) {
 }
 
 NVCUDA_API CUresult CUDAAPI cuCtxPushCurrent_v2(CUcontext ctx) {
-    t_currentContext = ctx;
+    if (!ctx) return CUDA_ERROR_INVALID_CONTEXT;
+    t_ctxStack.push_back(ctx);
     return CUDA_SUCCESS;
 }
 
@@ -197,8 +239,13 @@ NVCUDA_API CUresult CUDAAPI cuCtxPushCurrent(CUcontext ctx) {
 }
 
 NVCUDA_API CUresult CUDAAPI cuCtxPopCurrent_v2(CUcontext* pctx) {
-    if (pctx) *pctx = t_currentContext;
-    t_currentContext = nullptr;
+    if (t_ctxStack.empty()) {
+        if (pctx) *pctx = nullptr;
+        return CUDA_ERROR_INVALID_CONTEXT;
+    }
+    CUcontext top = t_ctxStack.back();
+    t_ctxStack.pop_back();
+    if (pctx) *pctx = top;
     return CUDA_SUCCESS;
 }
 
@@ -207,22 +254,33 @@ NVCUDA_API CUresult CUDAAPI cuCtxPopCurrent(CUcontext* pctx) {
 }
 
 NVCUDA_API CUresult CUDAAPI cuCtxSetCurrent(CUcontext ctx) {
-    t_currentContext = ctx;
+    if (ctx == nullptr) {
+        // Detach current thread (CUDA allows setting NULL to pop all).
+        t_ctxStack.clear();
+        return CUDA_SUCCESS;
+    }
+    if (t_ctxStack.empty()) {
+        t_ctxStack.push_back(ctx);
+    } else {
+        t_ctxStack.back() = ctx;
+    }
     return CUDA_SUCCESS;
 }
 
 NVCUDA_API CUresult CUDAAPI cuCtxGetCurrent(CUcontext* pctx) {
     if (!pctx) return CUDA_ERROR_INVALID_VALUE;
-    if (!t_currentContext) {
-        cuCtxCreate_v2(&t_currentContext, 0, 0);
+    CUcontext cur = currentContextLocked();
+    if (!cur) {
+        if (cuCtxCreate_v2(&cur, 0, 0) != CUDA_SUCCESS) return CUDA_ERROR_NOT_INITIALIZED;
     }
-    *pctx = t_currentContext;
+    *pctx = cur;
     return CUDA_SUCCESS;
 }
 
 NVCUDA_API CUresult CUDAAPI cuCtxGetDevice(CUdevice* device) {
     if (!device) return CUDA_ERROR_INVALID_VALUE;
-    *device = t_currentContext ? t_currentContext->device : 0;
+    CUcontext cur = currentContextLocked();
+    *device = cur ? cur->device : 0;
     return CUDA_SUCCESS;
 }
 
@@ -232,23 +290,63 @@ NVCUDA_API CUresult CUDAAPI cuCtxSynchronize(void) {
 }
 
 NVCUDA_API CUresult CUDAAPI cuDevicePrimaryCtxRetain(CUcontext* pctx, CUdevice dev) {
-    return cuCtxCreate_v2(pctx, 0, dev);
+    if (!pctx) return CUDA_ERROR_INVALID_VALUE;
+    int count = 0;
+    if (cudaGetDeviceCount(&count) != cudaSuccess || dev < 0 || dev >= count) {
+        return CUDA_ERROR_INVALID_DEVICE;
+    }
+    std::lock_guard<std::mutex> lock(g_driverMutex);
+    auto it = g_primaryCtx.find(dev);
+    if (it != g_primaryCtx.end()) {
+        g_primaryRefcount[dev]++;
+        *pctx = it->second;
+        return CUDA_SUCCESS;
+    }
+    CUcontext ctx = new (std::nothrow) CUctx_st();
+    if (!ctx) return CUDA_ERROR_OUT_OF_MEMORY;
+    ctx->device = dev;
+    ctx->flags = 0;
+    g_primaryCtx[dev] = ctx;
+    g_primaryRefcount[dev] = 1;
+    g_ctxDevice[ctx] = dev;
+    *pctx = ctx;
+    return CUDA_SUCCESS;
 }
 
 NVCUDA_API CUresult CUDAAPI cuDevicePrimaryCtxRelease(CUdevice dev) {
-    (void)dev;
+    std::lock_guard<std::mutex> lock(g_driverMutex);
+    auto it = g_primaryCtx.find(dev);
+    if (it == g_primaryCtx.end()) return CUDA_ERROR_INVALID_DEVICE;
+    if (--g_primaryRefcount[dev] <= 0) {
+        CUcontext ctx = it->second;
+        g_primaryCtx.erase(it);
+        g_primaryRefcount.erase(dev);
+        g_ctxDevice.erase(ctx);
+        eraseFromStack(ctx);
+        delete ctx;
+    }
     return CUDA_SUCCESS;
 }
 
 NVCUDA_API CUresult CUDAAPI cuDevicePrimaryCtxReset(CUdevice dev) {
-    (void)dev;
+    std::lock_guard<std::mutex> lock(g_driverMutex);
+    auto it = g_primaryCtx.find(dev);
+    if (it == g_primaryCtx.end()) return CUDA_SUCCESS;
+    CUcontext ctx = it->second;
+    g_primaryCtx.erase(it);
+    g_primaryRefcount.erase(dev);
+    g_ctxDevice.erase(ctx);
+    eraseFromStack(ctx);
+    delete ctx;
     return CUDA_SUCCESS;
 }
 
 NVCUDA_API CUresult CUDAAPI cuDevicePrimaryCtxGetState(CUdevice dev, unsigned int* flags, int* active) {
     (void)dev;
-    if (flags) *flags = 0;
-    if (active) *active = 1;
+    std::lock_guard<std::mutex> lock(g_driverMutex);
+    auto it = g_primaryCtx.find(dev);
+    if (flags) *flags = (it != g_primaryCtx.end()) ? it->second->flags : 0;
+    if (active) *active = (it != g_primaryCtx.end()) ? 1 : 0;
     return CUDA_SUCCESS;
 }
 
@@ -280,8 +378,13 @@ NVCUDA_API CUresult CUDAAPI cuMemFree(CUdeviceptr dptr) {
 
 NVCUDA_API CUresult CUDAAPI cuMemGetAddressRange_v2(CUdeviceptr* pbase, size_t* psize, CUdeviceptr dptr) {
     if (!pbase || !psize) return CUDA_ERROR_INVALID_VALUE;
-    *pbase = dptr;
-    *psize = 0;
+    if (dptr == 0) return CUDA_ERROR_INVALID_VALUE;
+    void* base = nullptr;
+    size_t size = 0;
+    cudaError_t err = cudaGetAllocRange(reinterpret_cast<void*>(dptr), &base, &size);
+    if (err != cudaSuccess) return CUDA_ERROR_INVALID_VALUE;
+    *pbase = reinterpret_cast<CUdeviceptr>(base);
+    *psize = size;
     return CUDA_SUCCESS;
 }
 
@@ -292,7 +395,11 @@ NVCUDA_API CUresult CUDAAPI cuMemGetAddressRange(CUdeviceptr* pbase, size_t* psi
 NVCUDA_API CUresult CUDAAPI cuMemAllocPitch_v2(CUdeviceptr* dptr, size_t* pPitch, size_t WidthInBytes, size_t Height, unsigned int ElementSizeBytes) {
     (void)ElementSizeBytes;
     if (!dptr || !pPitch) return CUDA_ERROR_INVALID_VALUE;
+    if (WidthInBytes == 0 || Height == 0) return CUDA_ERROR_INVALID_VALUE;
+    if (WidthInBytes > (size_t)-1 - 255) return CUDA_ERROR_OUT_OF_MEMORY;
     size_t pitch = (WidthInBytes + 255) & ~((size_t)255);
+    if (pitch < WidthInBytes) return CUDA_ERROR_OUT_OF_MEMORY;
+    if (Height > (size_t)-1 / pitch) return CUDA_ERROR_OUT_OF_MEMORY;
     size_t total = pitch * Height;
     *pPitch = pitch;
     return cuMemAlloc_v2(dptr, total);
@@ -401,8 +508,17 @@ NVCUDA_API CUresult CUDAAPI cuMemsetD8(CUdeviceptr dstDevice, unsigned char uc, 
 }
 
 NVCUDA_API CUresult CUDAAPI cuMemsetD32_v2(CUdeviceptr dstDevice, unsigned int ui, size_t N) {
-    std::vector<unsigned int> hostBuf(N, ui);
-    cudaError_t err = cudaMemcpy(reinterpret_cast<void*>(dstDevice), hostBuf.data(), N * sizeof(unsigned int), cudaMemcpyHostToDevice);
+    if (dstDevice == 0 && N > 0) return CUDA_ERROR_INVALID_VALUE;
+    if (N == 0) return CUDA_SUCCESS;
+    if (N > (size_t)-1 / sizeof(unsigned int)) return CUDA_ERROR_INVALID_VALUE;
+    size_t bytes = N * sizeof(unsigned int);
+    std::vector<unsigned int> hostBuf;
+    try {
+        hostBuf.assign(N, ui);
+    } catch (const std::bad_alloc&) {
+        return CUDA_ERROR_OUT_OF_MEMORY;
+    }
+    cudaError_t err = cudaMemcpy(reinterpret_cast<void*>(dstDevice), hostBuf.data(), bytes, cudaMemcpyHostToDevice);
     return (err == cudaSuccess) ? CUDA_SUCCESS : CUDA_ERROR_INVALID_VALUE;
 }
 
@@ -416,18 +532,36 @@ NVCUDA_API CUresult CUDAAPI cuMemsetD32(CUdeviceptr dstDevice, unsigned int ui, 
 
 NVCUDA_API CUresult CUDAAPI cuModuleLoad(CUmodule* module, const char* fname) {
     if (!module || !fname) return CUDA_ERROR_INVALID_VALUE;
-    CUmodule mod = new CUmod_st();
+    CUmodule mod = new (std::nothrow) CUmod_st();
+    if (!mod) return CUDA_ERROR_OUT_OF_MEMORY;
     mod->path = fname;
 
-    // If file exists, read it
+    // If file exists, read it with bounded size and checked IO.
+    // The caller-supplied path is used as-is (no search-path lookup).
     FILE* f = fopen(fname, "rb");
     if (f) {
-        fseek(f, 0, SEEK_END);
-        size_t sz = ftell(f);
-        fseek(f, 0, SEEK_SET);
-        mod->rawData.resize(sz);
-        fread(mod->rawData.data(), 1, sz, f);
+        bool ok = false;
+        if (fseek(f, 0, SEEK_END) == 0) {
+            long sizeLong = ftell(f);
+            const long MAX_MODULE_BYTES = 256L * 1024L * 1024L;
+            if (sizeLong >= 0 && sizeLong <= MAX_MODULE_BYTES &&
+                fseek(f, 0, SEEK_SET) == 0) {
+                size_t sz = static_cast<size_t>(sizeLong);
+                try {
+                    mod->rawData.resize(sz);
+                } catch (const std::bad_alloc&) {
+                    fclose(f);
+                    delete mod;
+                    return CUDA_ERROR_OUT_OF_MEMORY;
+                }
+                ok = (sz == 0) || (fread(mod->rawData.data(), 1, sz, f) == sz);
+            }
+        }
         fclose(f);
+        if (!ok) {
+            delete mod;
+            return CUDA_ERROR_INVALID_IMAGE;
+        }
     }
 
     *module = mod;
@@ -458,8 +592,10 @@ NVCUDA_API CUresult CUDAAPI cuModuleUnload(CUmodule hmod) {
 
 NVCUDA_API CUresult CUDAAPI cuModuleGetFunction(CUfunction* hfunc, CUmodule hmod, const char* name) {
     if (!hfunc || !name) return CUDA_ERROR_INVALID_VALUE;
+    if (name[0] == '\0' || std::strlen(name) > 1024) return CUDA_ERROR_INVALID_VALUE;
 
-    CUfunction fn = new CUfunc_st();
+    CUfunction fn = new (std::nothrow) CUfunc_st();
+    if (!fn) return CUDA_ERROR_OUT_OF_MEMORY;
     fn->name = name;
     if (hmod) {
         fn->spvPath = hmod->path;
@@ -488,9 +624,11 @@ NVCUDA_API CUresult CUDAAPI cuModuleGetFunction(CUfunction* hfunc, CUmodule hmod
 NVCUDA_API CUresult CUDAAPI cuModuleGetGlobal_v2(CUdeviceptr* dptr, size_t* bytes, CUmodule hmod, const char* name) {
     (void)hmod; (void)name;
     if (!dptr || !bytes) return CUDA_ERROR_INVALID_VALUE;
+    // Device globals are not modeled by the runtime: report NOT_FOUND
+    // instead of a fake success with a null pointer and zero size.
     *dptr = 0;
     *bytes = 0;
-    return CUDA_SUCCESS;
+    return CUDA_ERROR_NOT_FOUND;
 }
 
 NVCUDA_API CUresult CUDAAPI cuModuleGetGlobal(CUdeviceptr* dptr, size_t* bytes, CUmodule hmod, const char* name) {
@@ -588,13 +726,20 @@ NVCUDA_API CUresult CUDAAPI cuStreamSynchronize(CUstream hStream) {
 }
 
 NVCUDA_API CUresult CUDAAPI cuStreamQuery(CUstream hStream) {
-    (void)hStream;
-    return CUDA_SUCCESS;
+    cudaError_t err = cudaStreamQuery(hStream);
+    if (err == cudaSuccess) return CUDA_SUCCESS;
+    if (err == cudaErrorNotReady) return CUDA_ERROR_NOT_READY;
+    return CUDA_ERROR_LAUNCH_FAILED;
 }
 
 NVCUDA_API CUresult CUDAAPI cuStreamWaitEvent(CUstream hStream, CUevent hEvent, unsigned int Flags) {
-    (void)hStream; (void)hEvent; (void)Flags;
-    return CUDA_SUCCESS;
+    (void)Flags;
+    // CVUT events are host-side timestamps and order no device work, so the
+    // conservative honest implementation drains the stream: work submitted
+    // before the wait is guaranteed complete afterwards.
+    if (!hEvent) return CUDA_ERROR_INVALID_VALUE;
+    cudaError_t err = cudaStreamSynchronize(hStream);
+    return (err == cudaSuccess) ? CUDA_SUCCESS : CUDA_ERROR_LAUNCH_FAILED;
 }
 
 // =========================================================================
@@ -627,8 +772,10 @@ NVCUDA_API CUresult CUDAAPI cuEventSynchronize(CUevent hEvent) {
 }
 
 NVCUDA_API CUresult CUDAAPI cuEventQuery(CUevent hEvent) {
-    (void)hEvent;
-    return CUDA_SUCCESS;
+    cudaError_t err = cudaEventQuery(hEvent);
+    if (err == cudaSuccess) return CUDA_SUCCESS;
+    if (err == cudaErrorNotReady) return CUDA_ERROR_NOT_READY;
+    return CUDA_ERROR_INVALID_VALUE;
 }
 
 NVCUDA_API CUresult CUDAAPI cuEventElapsedTime(float* pMilliseconds, CUevent hStart, CUevent hEnd) {
