@@ -137,6 +137,7 @@ CUDART_API cudaError_t cudaStreamCreate(cudaStream_t* pStream);
 CUDART_API cudaError_t cudaStreamCreateWithFlags(cudaStream_t* pStream, unsigned int flags);
 CUDART_API cudaError_t cudaStreamDestroy(cudaStream_t stream);
 CUDART_API cudaError_t cudaStreamSynchronize(cudaStream_t stream);
+CUDART_API cudaError_t cudaStreamQuery(cudaStream_t stream);
 
 // Device API
 CUDART_API cudaError_t cudaGetDevice(int* device);
@@ -151,6 +152,7 @@ CUDART_API cudaError_t cudaEventCreate(cudaEvent_t* event);
 CUDART_API cudaError_t cudaEventCreateWithFlags(cudaEvent_t* event, unsigned int flags);
 CUDART_API cudaError_t cudaEventRecord(cudaEvent_t event, cudaStream_t stream);
 CUDART_API cudaError_t cudaEventSynchronize(cudaEvent_t event);
+CUDART_API cudaError_t cudaEventQuery(cudaEvent_t event);
 CUDART_API cudaError_t cudaEventElapsedTime(float* ms, cudaEvent_t start, cudaEvent_t end);
 CUDART_API cudaError_t cudaEventDestroy(cudaEvent_t event);
 
@@ -164,6 +166,9 @@ CUDART_API cudaError_t cudaPeekAtLastError(void);
 CUDART_API cudaError_t cudaLaunchKernel(const void* func, dim3 gridDim, dim3 blockDim, void** args, size_t sharedMem, cudaStream_t stream);
 CUDART_API cudaError_t cudaLaunchSpirv(const char* spvPath, dim3 gridDim, dim3 blockDim, const void* pushConstants, size_t pushConstantsSize, cudaStream_t stream);
 CUDART_API cudaError_t cudaGetVulkanContext(void** pInstance, void** pPhysicalDevice, void** pDevice, void** pQueue, uint32_t* pQueueFamily);
+// CVUT extension: resolve a device pointer to its allocation base and size.
+// Returns cudaErrorInvalidValue for unknown/freed pointers.
+CUDART_API cudaError_t cudaGetAllocRange(void* devPtr, void** pBase, size_t* pSize);
 
 #ifdef __cplusplus
 }

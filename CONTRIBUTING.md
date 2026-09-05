@@ -14,12 +14,17 @@ All contributors and maintainers are expected to follow friendly, respectful, an
 
 All contributions must strictly adhere to the project core invariants:
 
-1. **Zero Placeholders**: No stub functions, mock implementations, `TODO` comments, or silent fallbacks. All functions must either fully implement the expected behavior or explicitly return an appropriate error code (e.g. `VK_ERROR_FEATURE_NOT_PRESENT`).
+1. **No Silent Placeholders**: No stub functions, mock implementations, `TODO` comments, or silent fallbacks. All functions must either fully implement the expected behavior or explicitly return an appropriate error code (e.g. `VK_ERROR_FEATURE_NOT_PRESENT`, `cudaErrorNotSupported`, `CUDA_ERROR_NOT_FOUND`). Explicitly documented transitional lowerings (see `docs/architecture.md`, e.g. SASS memory-op placeholders and the reduction library kernel) are permitted only with fail-loud behavior for anything outside the documented subset.
 2. **Evidence-Based SASS Decoding**: All 128-bit SASS opcodes and bitfields (for Volta, Turing, Ampere, Ada, and Hopper) must be derived from verified hardware documentation and Mesa NAK source code (`src/nouveau/compiler/nak/encode/`).
-3. **Automated Verification**: Any pull request must pass the automated verification gates exiting with code 0:
+3. **Automated Verification**: Any pull request must pass the automated verification gates:
    ```bash
-   ./scripts/build_dist.sh && ./scripts/test_clean_install.sh
+   python scripts/build.py
+   python scripts/test.py
+   python scripts/validate.py
    ```
+   plus the required GitHub Actions workflows (see `.github/workflows/ci.yml`).
+   Legacy packaging helpers (`scripts/build_dist.sh`, `scripts/test_clean_install.sh`,
+   `scripts/install.sh`) are maintained best-effort and are not CI gates.
 
 ---
 

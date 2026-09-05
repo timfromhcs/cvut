@@ -191,6 +191,7 @@ def main():
 
     test_targets = [
         ("tests/t01_memory_test.cpp", f"build/bin/t01_test{exe_ext}", test_link_runtime + ld_flags),
+        ("tests/t02_negative_test.cpp", f"build/bin/t02_test{exe_ext}", ["-Lbuild/bin", "-Lbuild/lib", "-lnvcuda"] if is_win else ["-Lbuild/lib", "-lcuda"]),
         ("tests/stress_test.cpp", f"build/bin/stress_test{exe_ext}", test_link_runtime + ld_flags),
         ("tests/run_test.cpp", f"build/bin/run_test{exe_ext}", test_link_runtime + ld_flags),
         ("tests/run_sass_test.cpp", f"build/bin/run_sass_test{exe_ext}", test_link_runtime + ld_flags),

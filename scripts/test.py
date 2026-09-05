@@ -55,6 +55,7 @@ def main():
 
     test_plan = [
         ("Unit: sass_lifter Rust tests", ["cargo", "test", "--manifest-path", "src/lifter/Cargo.toml"]),
+        ("Negative: invalid API inputs (GPU-gated tiers)", [os.path.join("build", "bin", f"t02_test{exe_ext}")]),
         ("Memory: BDA allocator & sync", [os.path.join("build", "bin", f"t01_test{exe_ext}")]),
         ("Hardening: Heap fragmentation & concurrency", [os.path.join("build", "bin", f"stress_test{exe_ext}")]),
         ("Compute: vector_add (1M floats)", [os.path.join("build", "bin", f"run_test{exe_ext}"), "--case=vector_add", "--elements=1048576"]),

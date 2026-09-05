@@ -90,6 +90,8 @@ pub struct DecodedInstruction {
 }
 
 pub fn get_bits(inst: &[u32; 4], start: usize, end: usize) -> u64 {
+    assert!(end <= 128, "bit range exceeds 128-bit instruction");
+    assert!(start <= end, "invalid bit range");
     let mut res = 0u64;
     for bit in start..end {
         let word_idx = bit / 32;
@@ -98,6 +100,33 @@ pub fn get_bits(inst: &[u32; 4], start: usize, end: usize) -> u64 {
         res |= bit_val << (bit - start);
     }
     res
+}
+
+impl DecodedInstruction {
+    /// Returns true when the lifter has an explicit lowering for this opcode.
+    /// `Unknown` is never considered supported and must fail safely upstream.
+    #[allow(dead_code)]
+    pub fn is_supported(&self) -> bool {
+        !matches!(self.opcode, Opcode::Unknown(_))
+    }
+
+    /// Validate operand ranges that are constrained by the ISA subset CVUT lowers.
+    /// Register fields are full 8-bit (R0..R255) so any u8 is encodable;
+    /// predicate fields are 3-bit (P0..P7) so any u8 from decoding is encodable.
+    /// This hook exists so future tighter validation has a single choke point,
+    /// and to reject reserved `Unknown` encodings from the valid path.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.pred_reg > 7 {
+            return Err(format!(
+                "predicate register out of range: {}",
+                self.pred_reg
+            ));
+        }
+        match self.opcode {
+            Opcode::Unknown(raw) => Err(format!("unsupported/reserved opcode {:#06x}", raw)),
+            _ => Ok(()),
+        }
+    }
 }
 
 pub fn decode_instruction(inst: &[u32; 4]) -> DecodedInstruction {

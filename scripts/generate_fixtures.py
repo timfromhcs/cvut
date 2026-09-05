@@ -2,12 +2,18 @@ import struct
 import os
 
 def set_bits(inst, start, end, val):
-    # inst is list of 4 32-bit ints
+    # inst is list of 4 32-bit ints.
+    # Later fields overwrite overlapping earlier bits (clear-then-set), so
+    # shared bitfields (e.g. branch target overlapping immediate bits)
+    # decode to exactly the value passed here.
     for b in range(start, end):
         word_idx = b // 32
         bit_idx = b % 32
         bit_val = (val >> (b - start)) & 1
-        inst[word_idx] |= (bit_val << bit_idx)
+        if bit_val:
+            inst[word_idx] |= (1 << bit_idx)
+        else:
+            inst[word_idx] &= ~(1 << bit_idx)
 
 def encode_sass_instr(opcode, pred=7, pred_inv=0, dst=255, src0=255, src1=255, src2=255, imm32=0, offset=0, sr_idx=0, target_offset=0):
     inst = [0, 0, 0, 0]

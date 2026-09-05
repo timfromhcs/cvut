@@ -36,7 +36,7 @@ Unlike source-to-source transpilers (such as HIPify or Intel DPC++), CVUT requir
 1. **Dual Interception Layer**: Full C-linkage dynamic exports of both the CUDA Driver API (`cuInit`, `cuCtxCreate`, `cuMemAlloc`, `cuLaunchKernel` via `nvcuda.dll` / `libcuda.so`) and the CUDA Runtime API (`cudaMalloc`, `cudaMemcpy`, `cudaStreamSynchronize` via `cudart64_12.dll` / `libcudart.so`).
 2. **Native NVML Introspection (`nvml.dll` & `nvidia-smi.exe`)**: Drop-in GPU management instrumentation reporting live Vulkan physical device telemetry and VRAM utilization.
 3. **Hardware 64-Bit Device Addressing**: Direct pointer translation using `VK_KHR_buffer_device_address` (`PhysicalStorageBuffer64`) to preserve raw 64-bit CUDA pointer arithmetic without virtual translation tables.
-4. **Evidence-Based SASS Lifter**: Decodes compiled 128-bit machine instructions from ELF64 `.cubin` sections directly into optimized SPIR-V 1.5 compute shaders using verified bit patterns derived from Mesa NAK.
+4. **Evidence-Based SASS Lifter**: Decodes compiled 128-bit machine instructions from ELF64 `.cubin` sections into an explicit IR and then into SPIR-V 1.5 compute shaders using verified bit patterns derived from Mesa NAK. The modeled subset is documented in [Known Limitations](#️-known-limitations); unmodeled semantics fail loudly instead of mistranslating.
 
 ---
 
@@ -102,10 +102,19 @@ CVUT uses an evidence-based verification hierarchy:
 | Platform / GPU Target | Environment | Runtime API | Driver API | SASS Lifter | Validation Layer | Status | Evidence Level |
 |---|---|:---:|:---:|:---:|:---:|:---:|:---:|
 | **AMD Radeon RDNA** | Windows 11 (MSVC/Clang 21) | ✅ PASS | ✅ PASS | ✅ PASS | ✅ 0 Errors | Verified | **Level 4** |
-| **Linux x86_64 (Lavapipe / Mesa)** | Ubuntu 24.04 (Clang 18) | ✅ PASS | ✅ PASS | ✅ PASS | ✅ 0 Errors | CI Verified | **Level 3** |
+| **Linux x86_64 (software Vulkan)** | Ubuntu 24.04 (Clang 18) | ✅ PASS | ✅ PASS | ✅ PASS | ✅ 0 Errors | CI Verified | **Level 3** |
 | **Windows x86_64 (CI Runner)** | Server 2022 (MSVC / Choco) | ✅ PASS | ✅ PASS | ✅ PASS | N/A | Build Verified | **Level 3** |
 | **Apple Silicon (M-Series)** | macOS 14 (MoltenVK) | 🔄 Build Only | 🔄 Build Only | ✅ PASS | N/A | Experimental | **Level 1** |
-| **Intel Arc (Alchemist/Battlemage)** | Vulkan 1.3 | ✅ PASS | ✅ PASS | ✅ PASS | ✅ 0 Errors | Compatible | **Level 2** |
+| **Intel Arc (Alchemist/Battlemage)** | Vulkan 1.3 | ❓ Unknown | ❓ Unknown | ❓ Unknown | N/A | Not re-verified (no hardware in this pass) | **Level 1** |
+
+> **Evidence note (hardening pass):** the AMD Radeon row above was re-verified on
+> physical hardware in this pass: clean `scripts/build.py`, full `scripts/test.py`
+> (12/12 incl. the new negative suite), `spirv-val` over all lifted shaders, and
+> the suite re-run under `VK_LAYER_KHRONOS_validation` with no failures.
+> Linux software-Vulkan (llvmpipe/Lavapipe via loader ICD discovery) and
+> Windows/macOS jobs are enforced by `.github/workflows/ci.yml`
+> (full dispatch on software Vulkan; build + unit + negative + `spirv-val` on headless
+> runners). Intel Arc could not be re-verified here -- prior Level-2 evidence only.
 
 ### Mathematical Parity Matrix
 
@@ -238,6 +247,16 @@ CVUT adheres to a unified validation architecture: local developers and cloud CI
 - `./scripts/validate` (`scripts/validate.py`): Runs clean build, Clippy static analysis, test matrix, Vulkan Validation Layer audit, and performance benchmarks.
 - `./scripts/benchmark` (`scripts/benchmark.py`): Runs repeatability benchmarks on physical hardware.
 
+Test layers and status taxonomy: unit (Rust decoder/IR/SPIR-V, 29 tests), negative
+(`t02_negative_test`, 47 assertions, GPU-gated tiers), integration/E2E (memory,
+streams, module load, kernel dispatch, graphic interop, NVML), stress
+(fragmentation, concurrency), and `spirv-val` over every lifted shader.
+Each check reports `PASS`, `FAIL`, `SKIP` (e.g. device-gated tiers on headless
+machines), `UNSUPPORTED` (explicitly unmodeled semantics), or `BLOCKED`
+(environment/toolchain limits). A missing GPU never becomes a PASS: headless CI
+jobs verify build + unit + negative layers only, while full dispatch runs on
+Linux Lavapipe and physical hardware.
+
 ---
 
 ## 🔬 Platform Setup
@@ -264,9 +283,24 @@ export VK_ICD_FILENAMES="$(brew --prefix molten-vk)/share/vulkan/icd.d/MoltenVK_
 
 ## ⚠️ Known Limitations
 
-1. **SASS Coverage**: The initial SASS lifter covers primary compute kernels (arithmetic, memory addressing, barrier synchronization, and reduction CFGs). Complex warp shuffle variations (`SHFL.IDX`) and indirect jump tables are active roadmap targets.
+1. **SASS Coverage**: The lifter lowers an explicit subset per instruction to SPIR-V
+   (`MOV/IADD3/IMAD/ISETP/FADD/FMUL/FFMA/S2R/LDC`, barriers, resolved branches/exits;
+   see `docs/architecture.md`). `LDG`/`STG` are ordered placeholders -- observable global
+   traffic is performed by the documented vector-add ABI epilogue -- because SASS alone
+   carries no kernel `.param` layout for sound address mapping. Shared-memory reduction
+   patterns use a validated precompiled library kernel. `HMMA`/`SHFL`/`LDSM`,
+   reserved opcodes and unresolvable branches fail loudly (CLI exit 2) instead of
+   mistranslating. Complex warp shuffle variations (`SHFL.IDX`) and indirect jump tables
+   remain roadmap targets.
 2. **Matrix Tensor Cores**: Hardware FP16 GEMM is currently implemented via explicit 16-bit float storage buffers and compute pipelines rather than hardware `VK_KHR_cooperative_matrix`.
 3. **PTX JIT**: Runtime loading is currently optimized for compiled machine SASS (`.cubin`). Textual PTX parsing requires JIT preprocessing.
+4. **Events**: `cudaEvent`/`cuEvent` are host-side timestamps used for elapsed-time
+   measurement; they order no device work (`cuStreamWaitEvent` conservatively drains
+   the stream). Device globals (`cuModuleGetGlobal`) are unmodeled (`NOT_FOUND`), and
+   raw function-pointer `cudaLaunchKernel` is unsupported (use `cudaLaunchSpirv` /
+   `cuLaunchKernel` with a loaded module).
+5. **Push constants**: kernel argument blocks are capped at the portable 128-byte
+   Vulkan guarantee; larger layouts return `cudaErrorInvalidValue`.
 
 ---
 
